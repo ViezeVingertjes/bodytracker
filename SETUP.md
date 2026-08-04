@@ -721,6 +721,63 @@ Every escape route was tested and none works on this unit:
 So on the D415, clean IR imagery and good depth cannot coexist. Colour remains the
 best configuration, and the sensors are already all contributing.
 
+## Known issue: repeated camera open/close degrades the stream
+
+Opening and closing the camera several times in one process (or in quick succession
+across processes) leaves it delivering almost nothing. Measured, identical code and
+identical solve time:
+
+```
+full  (1st camera open)   solve 17.5ms   28.4 fps
+lite  (2nd camera open)   solve 12.9ms   29.7 fps
+full  (3rd camera open)   solve 17.3ms    0.7 fps   <-- collapsed
+```
+
+**Replug the camera to recover.** This explains several confusing results earlier in
+this project that were originally read as code faults: `RuntimeError: No device
+connected`, `Frame didn't arrive within 5000`, and `benchmark.py --preview` appearing
+to hang on its third preset. Any benchmark that opens the camera once per
+configuration is affected — which is most of them.
+
+Practical consequence: when comparing configurations, run each in a **fresh process
+on a freshly plugged camera**, and treat a suspiciously bad result in a later pass as
+suspect until it has been reproduced from a clean start.
+
+## Model and frame-rate choices, settled by measurement
+
+Everything below was tested rather than reasoned about.
+
+### Frame-skipping: decisively worse
+
+Processing every Nth frame and predicting between them, scored against where the body
+actually is at display time:
+
+| configuration | jitter | display error |
+|---|---|---|
+| **full model, every frame** | **5.1 mm** | **5.2 mm** |
+| every 2nd frame, predict between | 5.6 mm | 10.0 mm |
+| every 2nd frame, lead raised to 83 ms | 6.0 mm | 8.9 mm |
+| every 3rd frame | 5.4 mm | 13.6 mm |
+
+Skipping roughly **doubles** display error, and raising the lead does not rescue it:
+prediction is linear and limb motion is not, over 66 ms.
+
+This also rules out `heavy` without testing it. At 51 ms it could only run every 2nd
+frame, so it *starts* at 10.0 mm against full's 5.2 mm — it would have to halve its own
+landmark error just to break even.
+
+### Model: `full` stays
+
+| model | solve | achieved fps |
+|---|---|---|
+| **full** | **17.5 ms** | **28.4** |
+| lite | 12.9 ms | 29.7 |
+
+`lite` buys 4.5% more framerate for a measurably less accurate model. Not worth it.
+
+So the current configuration — `full`, every frame, 50 ms lead — is the best of every
+option tested.
+
 ## Still to do
 
 - [x] ~~Confirm VRChat accepts our OSC trackers~~ — all 8 indices, local desktop VRChat
