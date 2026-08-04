@@ -12,15 +12,35 @@ D415 ──► MediaPipe pose ──► depth lift ──► stabilise ──►
 
 ## Install
 
-```bash
-uv venv --python 3.12 .venv
-VIRTUAL_ENV=.venv uv pip install python-osc numpy mediapipe
-./fetch-models.sh                     # pose models, 44 MB, not in git
+**Use Python 3.12 on both platforms.** It is the highest version with a MediaPipe
+wheel, and MediaPipe is the binding constraint.
+
+### Windows
+
+Everything is a pip wheel — no source build needed.
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\pip install pyrealsense2 mediapipe opencv-contrib-python python-osc numpy
+.venv\Scripts\python bodytracker.py fetch
 ```
 
-`pyrealsense2` must be built from source on Ubuntu 26.04 — there is no apt package
-and no wheel for this Python. `SETUP.md` documents the exact build, including two
-flags without which it fails.
+Windows resolves MediaPipe to **0.10.21** (1.0.0 ships no Windows wheel). That is
+fine — this code uses the Tasks API, which is present and identical there; verified
+against 0.10.21 explicitly.
+
+### Linux
+
+```bash
+uv venv --python 3.12 .venv
+VIRTUAL_ENV=.venv uv pip install mediapipe opencv-contrib-python python-osc numpy
+.venv/bin/python bodytracker.py fetch
+```
+
+`pyrealsense2` is the one exception: on Ubuntu 26.04 there is no apt package and no
+wheel for this Python, so it must be built from source. `SETUP.md` documents the exact
+build, including two flags without which it fails, and the udev rule the camera needs
+in order to be usable without root.
 
 ## Quick start
 

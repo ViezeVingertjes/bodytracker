@@ -10,6 +10,7 @@ in Qt, which a headless tracking run has no use for.
 """
 
 import os
+import sys
 
 import numpy as np
 
@@ -57,13 +58,17 @@ def require_cv2():
     """Import cv2 with the Qt workarounds applied. Cached after first call."""
     global _cv2
     if _cv2 is None:
-        # OpenCV's Qt build ships no Wayland plugin, so it runs under XWayland
-        # regardless, and Qt warns about "ignoring XDG_SESSION_TYPE=wayland"
-        # every launch. Pinning the platform alone does not silence it -- Qt
-        # warns as long as it sees the variable -- so drop it for this process.
-        # Must precede the cv2 import; the parent environment is untouched.
-        os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
-        os.environ.pop("XDG_SESSION_TYPE", None)
+        # LINUX ONLY. OpenCV's Qt build ships no Wayland plugin, so it runs
+        # under XWayland regardless and Qt warns about "ignoring
+        # XDG_SESSION_TYPE=wayland" every launch. Pinning the platform alone
+        # does not silence it -- Qt warns as long as it sees the variable -- so
+        # drop it for this process.
+        #
+        # Must NOT run on Windows or macOS: there is no xcb plugin there, and
+        # forcing it makes Qt fail to start at all, killing the preview window.
+        if sys.platform.startswith("linux"):
+            os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+            os.environ.pop("XDG_SESSION_TYPE", None)
         import cv2
         _cv2 = cv2
     return _cv2

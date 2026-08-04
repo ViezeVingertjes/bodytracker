@@ -23,6 +23,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 os.environ.setdefault("GLOG_stderrthreshold", "2")
 
 import collections  # noqa: E402
+import pathlib  # noqa: E402
 import contextlib  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
@@ -56,8 +57,14 @@ MODELS = ("lite", "full", "heavy")
 DEFAULT_MODEL = "full"
 
 
+# Anchored to this file, not the working directory, so the app runs from
+# anywhere -- and so Windows shortcuts and IDEs, which rarely set the CWD to the
+# project root, do not fail with a confusing "model not found".
+MODEL_DIR = pathlib.Path(__file__).resolve().parent / "models"
+
+
 def model_path(name):
-    return f"models/pose_landmarker_{name}.task"
+    return str(MODEL_DIR / f"pose_landmarker_{name}.task")
 
 
 MODEL_PATH = model_path(DEFAULT_MODEL)
@@ -208,10 +215,8 @@ class PoseSolver:
         )
         if not os.path.exists(model_path):
             raise FileNotFoundError(
-                f"pose model not found at {model_path!r}. Download it with:\n"
-                "  curl -sSL -o models/pose_landmarker_full.task "
-                "https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
-                "pose_landmarker_full/float16/latest/pose_landmarker_full.task"
+                f"pose model not found at {model_path!r}.\n"
+                "Fetch the models with:  python bodytracker.py fetch"
             )
         with _captured_stderr():
             self._landmarker = PoseLandmarker.create_from_options(options)

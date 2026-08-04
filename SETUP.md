@@ -1,5 +1,16 @@
 # What is actually installed on this machine
 
+> **Platform note.** This file records the Linux (Ubuntu 26.04) build, which is the
+> harder one — `pyrealsense2` has to be compiled and the camera needs a udev rule.
+> **On Windows every dependency is a pip wheel and none of that applies**; see the
+> README. The application code itself is platform-independent, with one Linux-only
+> branch (a Qt platform workaround in `overlay.py`, explicitly gated because forcing
+> it on Windows stops Qt starting at all).
+>
+> Both platforms should use **Python 3.12** — the highest with a MediaPipe wheel.
+> Windows resolves MediaPipe to 0.10.21 rather than 1.0.0; the Tasks API this code
+> uses is present and identical there, verified against 0.10.21.
+
 Executed 2026-08-04 on Ubuntu 26.04 (kernel 7.0.0-28-generic). This is the record of the
 real setup; `RESEARCH.md` §5 is the plan it was based on.
 

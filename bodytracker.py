@@ -8,6 +8,7 @@ One entry point, five subcommands:
     bodytracker.py measure         record/replay a session, compare stabilisation
     bodytracker.py fake [host]     synthetic trackers, no camera -- tests the network
     bodytracker.py listen          watch VRChat's outgoing OSC, proves OSC is enabled
+    bodytracker.py fetch           download the pose models (run this first)
 
 Before anything appears in VRChat you must, in VRChat:
   1. enable OSC          (desktop: hold R -> Options -> OSC -> Enabled)
@@ -22,6 +23,8 @@ will not move. That is expected, not a fault.
 import argparse
 import collections
 import math
+import pathlib
+import shutil
 import sys
 import time
 
@@ -30,7 +33,8 @@ import numpy as np
 import overlay
 from capture import DepthCamera
 from osc_out import VRCHAT_OSC_PORT, TrackerSender
-from solver import DEFAULT_MODEL, MODELS, PoseSolver, Skeleton, model_path
+from solver import (DEFAULT_MODEL, MODEL_DIR, MODELS, PoseSolver, Skeleton,
+                    model_path)
 from stabilize import ALL_BONES, SkeletonStabilizer
 from transform import (
     DEFAULT_ROLES,
@@ -330,6 +334,48 @@ def cmd_fake(args, parser):
 
 
 # --------------------------------------------------------------------------
+# fetch -- download the pose models
+# --------------------------------------------------------------------------
+
+MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
+             "pose_landmarker_{v}/float16/latest/pose_landmarker_{v}.task")
+
+
+def cmd_fetch(args, _parser):
+    """Download the pose models. Pure stdlib, so it works everywhere Python does.
+
+    This replaced a shell script, which only worked on Linux and macOS -- the
+    models are needed on Windows too, and asking Windows users to find a bash is
+    a poor first-run experience.
+    """
+    import urllib.request
+
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    wanted = MODELS if args.all else [args.model]
+    for variant in wanted:
+        target = pathlib.Path(model_path(variant))
+        if target.exists() and not args.force:
+            print(f"have  {target.name}")
+            continue
+        url = MODEL_URL.format(v=variant)
+        print(f"fetch {target.name} ...", end="", flush=True)
+        # Download to a temporary name and rename, so an interrupted download
+        # never leaves a truncated file that looks valid to the next run.
+        tmp = target.with_suffix(".partial")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response, \
+                    open(tmp, "wb") as handle:
+                shutil.copyfileobj(response, handle)
+            tmp.replace(target)
+            print(f" {target.stat().st_size / 1e6:.0f} MB")
+        except Exception as exc:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+            print(f" FAILED: {exc}")
+            return 1
+    return 0
+
+
+# --------------------------------------------------------------------------
 # listen -- confirm OSC is actually on
 # --------------------------------------------------------------------------
 
@@ -496,6 +542,12 @@ def build_parser():
                       help="probe specific indices as a countable row, e.g. 1,2,3,4")
     fake.add_argument("--no-head", action="store_true")
     fake.set_defaults(func=cmd_fake)
+
+    fetch = sub.add_parser("fetch", help="download the pose models")
+    fetch.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
+    fetch.add_argument("--all", action="store_true", help="fetch every variant")
+    fetch.add_argument("--force", action="store_true", help="re-download if present")
+    fetch.set_defaults(func=cmd_fetch)
 
     listen = sub.add_parser("listen", help="watch VRChat's outgoing OSC")
     listen.add_argument("--port", type=int, default=9001)

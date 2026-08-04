@@ -27,7 +27,7 @@ import pyrealsense2 as rs
 import overlay
 
 from capture import DepthCamera
-from solver import PoseSolver
+from solver import PoseSolver, model_path
 from stabilize import ALL_BONES
 
 
@@ -133,7 +133,7 @@ def bench_models(args):
           f"{'bone spread':>13}{'max fps':>10}")
     print("-" * 68)
     for variant in variants:
-        path = f"models/pose_landmarker_{variant}.task"
+        path = model_path(variant)
         cam = DepthCamera(rotate_180=args.rotate_180, filtering=True)
         cam.start()
         try:
