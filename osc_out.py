@@ -20,6 +20,9 @@ some, which would tear a pose across frames (a hip from frame N with a foot from
 N-1). A bundle is one datagram: it arrives whole or not at all.
 """
 
+import threading
+import time
+
 from pythonosc import osc_bundle_builder, osc_message_builder
 from pythonosc.udp_client import UDPClient
 
@@ -76,6 +79,123 @@ class TrackerSender:
 
         if not empty:
             self._client.send(bundle.build())
+
+
+class PoseSender:
+    """Owns the predictors and decides when a frame goes out.
+
+    Two modes, one implementation. With `hz=0` the caller pumps it once per
+    camera frame, which is what this pipeline has always done. With `hz>0` a
+    thread sends on its own clock, independent of the camera.
+
+    The second mode is the point. VRChat applies tracker data per RENDERED
+    frame, so 30Hz updates on a 72-90Hz headset are held for two or three
+    frames -- staleness stacked on top of the pipeline latency that --lead-ms
+    already exists to cancel. The predictors can produce a pose for any moment,
+    so a faster sender needs no new measurements: it re-extrapolates the ones it
+    has. Sub-stepping the capture loop instead would not work, because at ~30fps
+    with ~33ms of work per iteration that loop has no idle time to sub-step
+    into -- which is what makes a thread the only option rather than a
+    preference.
+
+    Prediction is evaluated on the SENDING side, not at update time. A pose
+    extrapolated when its frame arrived would be exactly as stale as the frame
+    by the time it actually went out.
+    """
+
+    def __init__(self, sender, positions, rotations, lead=0.0, hz=0,
+                 clock=None, include_head=True):
+        self._sender = sender
+        self._positions = positions
+        self._rotations = rotations
+        self.lead = lead
+        self.hz = hz
+        self.include_head = include_head
+        self._clock = clock or time.monotonic
+        # ONE lock over BOTH predictors. A lock per predictor would let a send
+        # land between the position and rotation updates of a single frame,
+        # pairing this frame's hip with last frame's hip rotation -- precisely
+        # the inconsistency RotationPredictor was added to remove.
+        self._lock = threading.Lock()
+        self._thread = None
+        self._stop = threading.Event()
+
+    def update(self, trackers, rotations, head, t):
+        """Hand the predictors one frame of measurements."""
+        with self._lock:
+            self._positions.update(trackers, t)
+            self._rotations.update(rotations, t)
+            if head is not None:
+                self._positions.update({"head": head}, t)
+
+    def poses_at(self, t):
+        """({index: (position, rotation)}, head_pose or None) at time `t`.
+
+        Emits EVERY tracker seen so far, not just those measured this frame.
+        OSC is stateless and VRChat has no "tracker removed" message, so going
+        quiet does not retract a tracker -- it freezes it where it last was.
+        """
+        with self._lock:
+            positions = self._positions.at(t, self.lead)
+            rotations = self._rotations.at(t, self.lead)
+        poses, head_pose = {}, None
+        for key, position in positions.items():
+            rotation = rotations.get(key, (0.0, 0.0, 0.0))
+            if key == "head":
+                if self.include_head:
+                    head_pose = (position, rotation)
+            else:
+                poses[key] = (position, rotation)
+        return poses, head_pose
+
+    def send_once(self, t):
+        poses, head_pose = self.poses_at(t)
+        # Sent outside the lock: this is network I/O, and holding the lock
+        # across it would stall the capture thread behind a slow socket.
+        self._sender.send_frame(poses, head_pose)
+
+    def stale_keys(self, t):
+        with self._lock:
+            return (set(self._positions.stale_keys(t))
+                    | set(self._rotations.stale_keys(t)))
+
+    def start(self):
+        if self.hz <= 0 or self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        period = 1.0 / self.hz
+        next_tick = self._clock()
+        while not self._stop.is_set():
+            self.send_once(self._clock())
+            next_tick += period
+            delay = next_tick - self._clock()
+            if delay < 0:
+                # Fell behind. Resync instead of accumulating debt, which would
+                # otherwise be repaid as a burst of back-to-back sends.
+                next_tick = self._clock()
+                delay = 0.0
+            self._stop.wait(delay)
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop()
+        return False
 
 
 def _split_pose(pose):

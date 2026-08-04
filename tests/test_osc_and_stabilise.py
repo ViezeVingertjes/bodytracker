@@ -8,14 +8,16 @@ no error. These assert on what actually reaches a socket.
 
 import socket
 import threading
+import time
 
 import numpy as np
 import pytest
 from pythonosc.osc_packet import OscPacket
 
 import skeleton as S
-from osc_out import TrackerSender
+from osc_out import PoseSender, TrackerSender
 from stabilize import BoneLengthModel, OcclusionFiller, OutlierGate, SkeletonStabilizer
+from transform import RotationPredictor, TrackerPredictor
 
 
 def receive_one(port, timeout=2.0):
@@ -36,6 +38,132 @@ def receive_one(port, timeout=2.0):
     thread = threading.Thread(target=listen)
     thread.start()
     return sock, thread, received
+
+
+class Recorder:
+    """Stands in for TrackerSender, keeping every frame it was handed."""
+
+    def __init__(self):
+        self.frames = []
+
+    def send_frame(self, poses, head=None):
+        self.frames.append((dict(poses), head))
+
+
+class TestPoseSender:
+    @staticmethod
+    def _wired(hz=0, lead=0.0, clock=None, include_head=True):
+        recorder = Recorder()
+        sender = PoseSender(recorder, TrackerPredictor(), RotationPredictor(),
+                            lead=lead, hz=hz, clock=clock,
+                            include_head=include_head)
+        return sender, recorder
+
+    def test_inline_mode_sends_nothing_on_its_own(self):
+        sender, recorder = self._wired(hz=0)
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        sender.start()          # must be a no-op at hz=0
+        time.sleep(0.05)
+        sender.stop()
+        assert recorder.frames == []
+
+    def test_poses_at_pairs_positions_with_rotations(self):
+        sender, _ = self._wired()
+        sender.update({1: np.array([1.0, 2.0, 3.0])},
+                      {1: np.array([0.0, 90.0, 0.0])}, None, 0.0)
+        poses, head = sender.poses_at(0.0)
+        assert head is None
+        position, rotation = poses[1]
+        assert np.allclose(position, [1.0, 2.0, 3.0])
+        assert np.allclose(rotation, [0.0, 90.0, 0.0], atol=1e-6)
+
+    def test_position_without_rotation_gets_identity(self):
+        sender, _ = self._wired()
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        poses, _ = sender.poses_at(0.0)
+        assert np.allclose(poses[1][1], [0.0, 0.0, 0.0])
+
+    def test_head_is_separated_from_body_trackers(self):
+        sender, _ = self._wired()
+        sender.update({1: np.zeros(3)}, {}, np.array([0.0, 1.7, 0.0]), 0.0)
+        poses, head = sender.poses_at(0.0)
+        assert set(poses) == {1}
+        assert np.allclose(head[0], [0.0, 1.7, 0.0])
+
+    def test_head_can_be_suppressed(self):
+        sender, _ = self._wired(include_head=False)
+        sender.update({1: np.zeros(3)}, {}, np.array([0.0, 1.7, 0.0]), 0.0)
+        poses, head = sender.poses_at(0.0)
+        assert head is None
+        assert set(poses) == {1}, "suppressing the head must not drop trackers"
+
+    def test_send_once_transmits_one_frame(self):
+        sender, recorder = self._wired()
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        sender.send_once(0.0)
+        assert len(recorder.frames) == 1
+
+    def test_threaded_mode_sends_without_new_measurements(self):
+        # The whole point: one update, many sends. A camera-locked sender would
+        # emit exactly once here.
+        sender, recorder = self._wired(hz=200)
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        with sender:
+            time.sleep(0.25)
+        # 200Hz for 0.25s is ~50 sends; timing on a loaded box is loose, so
+        # assert the order of magnitude rather than an exact count.
+        assert 15 <= len(recorder.frames) <= 90, len(recorder.frames)
+
+    def test_stop_is_idempotent_and_joins(self):
+        sender, _ = self._wired(hz=100)
+        sender.start()
+        sender.stop()
+        sender.stop()
+        assert not sender.is_running()
+
+    def test_concurrent_updates_never_tear_a_pose(self):
+        # A torn read pairs frame N's position with frame N-1's rotation. Both
+        # are written from the same counter, so they must agree.
+        #
+        # The sender's clock is pinned to the writer's timebase and published
+        # only AFTER each update lands, so it never runs ahead of the newest
+        # measurement. Prediction is then a no-op (the horizon clips at 0) and
+        # any disagreement can only be a torn read, which is what this tests.
+        now = [0.0]
+        sender, recorder = self._wired(hz=500, clock=lambda: now[0])
+        stop = threading.Event()
+
+        def writer():
+            i = 0
+            while not stop.is_set():
+                i += 1
+                v = float(i % 90)
+                t = i * 1e-4
+                sender.update({1: np.array([v, v, v])},
+                              {1: np.array([0.0, v, 0.0])}, None, t)
+                now[0] = t
+
+        thread = threading.Thread(target=writer, daemon=True)
+        thread.start()
+        try:
+            with sender:
+                time.sleep(0.3)
+        finally:
+            stop.set()
+            thread.join()
+
+        assert recorder.frames, "sender produced nothing"
+        for poses, _ in recorder.frames:
+            position, rotation = poses[1]
+            assert np.isclose(position[0], position[1])
+            assert np.isclose(rotation[1], position[0], atol=1e-6), (
+                "rotation came from a different update than the position")
+
+    def test_stale_keys_unions_both_predictors(self):
+        sender, _ = self._wired()
+        sender.update({1: np.zeros(3)}, {2: np.zeros(3)}, None, 0.0)
+        assert sender.stale_keys(0.5) == set()
+        assert sender.stale_keys(2.0) == {1, 2}
 
 
 class TestOscWireFormat:
