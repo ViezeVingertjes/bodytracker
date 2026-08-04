@@ -169,6 +169,7 @@ bodytracker.py run [host] [--port 9000]
     --roles hip,chest,left_foot,right_foot
     --flip                          camera mounted upside down
     --lead-ms 50                    latency compensation (0 disables)
+    --send-hz 0                     0 = per camera frame; try 90 (see below)
     --model full                    lite | full | heavy
     --min-cutoff 0.5 --beta 0.35    smoothing
     --no-bones --no-gate --no-fill  disable a stabilisation stage
@@ -193,6 +194,29 @@ Each was chosen by measurement, and several contradict the obvious guess:
   gap on your torso with the wall behind you.
 - **50 ms prediction lead** — cuts display-time error 9.0 → 3.8 mm, and the
   optimum lands on the independently measured pipeline latency.
+
+## `--send-hz`: not yet measured
+
+Every default above was settled by measurement. This one has not been, and is
+opt-in for exactly that reason.
+
+VRChat applies tracker data per *rendered* frame, so a 30 Hz send on a 72 Hz
+headset is held for roughly 2.4 frames — staleness stacked on top of the
+pipeline latency `--lead-ms` already cancels. `--send-hz 90` runs the sender on
+its own thread, re-extrapolating the poses it already has to fill the gaps
+between camera frames. No new measurements are involved, so it costs nothing at
+the camera end.
+
+What is *not* known is whether the extra extrapolation between frames costs more
+jitter than the staleness it removes. Settling that needs a recording denser than
+the pipeline's own 30 fps — otherwise the ground truth has to be interpolated,
+and linear interpolation is the same model linear extrapolation assumes, so the
+yardstick would favour the thing being tested. Until that is done, treat
+`--send-hz` as something to try, not as a measured improvement.
+
+Rotation prediction has no such caveat: rotations were being held at their last
+measured value while positions were extrapolated 50 ms ahead, so every frame
+shipped a pose that disagreed with itself. They now share `--lead-ms`.
 
 `SETUP.md` has the full tables, plus the RealSense options deliberately *not* used
 and why.

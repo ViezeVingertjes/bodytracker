@@ -287,9 +287,9 @@ def build_trackers(skeleton, roles=DEFAULT_ROLES, with_rotations=True):
     """Skeleton (camera space) -> ({index: position}, {index: rotation}, head).
 
     Roles whose joints are missing are absent from the result. Deciding what to
-    do about that is main.py's job via TrackerLatch -- omitting an address does
-    NOT retract a tracker in VRChat, it freezes it, so the decision needs the
-    latch's history and cannot be made here.
+    do about that is PoseSender's job -- omitting an address does NOT retract a
+    tracker in VRChat, it freezes it, so the decision needs the predictors'
+    history and cannot be made here.
     """
     sources = {
         "hip": lambda: skeleton.midpoint(S.L_HIP, S.R_HIP),
@@ -592,39 +592,3 @@ class TrackerPredictor:
 
     def stale_keys(self, t, max_stale=1.0):
         return [k for k, ts in self._time.items() if t - ts > max_stale]
-
-
-class TrackerLatch:
-    """Keeps every enabled tracker emitting, even when its joint is missing.
-
-    OSC is stateless and VRChat has no "tracker removed" message: if we simply
-    stop sending an address, VRChat keeps whatever position it last received.
-    Going silent therefore does NOT hide a missing foot -- it freezes that foot
-    in mid-air wherever it last was, indefinitely.
-
-    With ankles measured at 71-87% presence, silence would mean feet freezing
-    several times a second, which reads as broken tracking rather than as a
-    dropped frame. So once a tracker has been seen we always emit something for
-    it, and the only question is what.
-
-    Held values are marked stale after `max_stale` so callers can report the
-    situation honestly, but they keep being sent -- a slightly out-of-date foot
-    is better than a frozen one, and both beat VRChat inventing its own.
-    """
-
-    def __init__(self, max_stale=1.0):
-        self.max_stale = max_stale
-        self._last = {}
-        self._last_t = {}
-
-    def update(self, trackers, t):
-        for key, value in trackers.items():
-            self._last[key] = value
-            self._last_t[key] = t
-
-    def all_current(self):
-        """Every tracker seen so far, latest known value. Never shrinks."""
-        return dict(self._last)
-
-    def stale_keys(self, t):
-        return [k for k, ts in self._last_t.items() if t - ts > self.max_stale]

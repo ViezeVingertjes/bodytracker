@@ -33,15 +33,15 @@ import time
 import numpy as np
 
 import overlay
-from osc_out import VRCHAT_OSC_PORT, TrackerSender
+from osc_out import VRCHAT_OSC_PORT, PoseSender, TrackerSender
 from solver import (DEFAULT_MODEL, MODEL_DIR, MODELS, NEEDED, PoseSolver,
                     Skeleton, model_path)
 from stabilize import ALL_BONES, SkeletonStabilizer
 from transform import (
     DEFAULT_ROLES,
     TRACKER_ROLES,
+    RotationPredictor,
     RotationSmoother,
-    TrackerLatch,
     TrackerPredictor,
     build_trackers,
 )
@@ -146,11 +146,23 @@ def cmd_run(args, parser, *, sending=True):
 
     sender = TrackerSender(args.host, args.port) if sending else None
     stabilizer = make_stabilizer(args)
-    latch, rotation_latch = TrackerPredictor(), TrackerLatch()
     rotation_smoother = RotationSmoother()
+    send_hz = getattr(args, "send_hz", 0.0)
+    # The sender's clock has to share the loop's timebase (seconds since t0),
+    # or the horizon it extrapolates over is meaningless. t0 is not known until
+    # the camera is open, so it is patched in below.
+    clock_origin = [None]
+    pose_sender = PoseSender(
+        sender, TrackerPredictor(), RotationPredictor(),
+        lead=args.lead_ms / 1000.0, hz=send_hz if sending else 0.0,
+        clock=lambda: (time.monotonic() - clock_origin[0]
+                       if clock_origin[0] is not None else 0.0),
+        include_head=not args.no_head,
+    )
 
     if sending:
-        print(f"sending to {args.host}:{args.port} at {SEND_HZ} Hz")
+        how = f"{send_hz:g} Hz" if send_hz > 0 else f"{SEND_HZ} Hz (per camera frame)"
+        print(f"sending to {args.host}:{args.port} at {how}")
         for role in roles:
             print(f"  {role:<12} -> tracker index {TRACKER_ROLES[role]}")
         print("  (indices follow SlimeVR's convention -- see RESEARCH.md section 2)")
@@ -167,12 +179,18 @@ def cmd_run(args, parser, *, sending=True):
     show_depth = False
     fps, last_tick = 0.0, time.monotonic()
 
-    with open_camera(args) as cam, PoseSolver(model_path(args.model)) as solver:
+    # pose_sender last, so its thread is stopped FIRST on the way out -- before
+    # the camera and solver it shares a loop with are torn down, and including
+    # on ctrl-c. Between entering here and the first update() its predictors are
+    # empty, so poses_at() yields nothing and TrackerSender sends no datagram.
+    with open_camera(args) as cam, PoseSolver(model_path(args.model)) as solver, \
+            pose_sender:
         for _ in range(10):
             cam.read()
         if cam.sensor_warnings:
             print(f"camera warnings: {cam.sensor_warnings}", flush=True)
         t0 = time.monotonic()
+        clock_origin[0] = t0
         # Tracked separately from `fps`, which is the end-to-end pipeline rate
         # and so falls with a heavier model or a slower CPU -- feeding that to
         # health_warning() reports a hardware fault for what is a model choice.
@@ -227,27 +245,12 @@ def cmd_run(args, parser, *, sending=True):
                 drawable = stable
                 trackers, rotations, head = build_trackers(
                     stable, roles, with_rotations=not args.no_rotations)
-                latch.update(trackers, t)
-                rotation_latch.update(rotation_smoother(rotations), t)
-                if head is not None:
-                    latch.update({"head": head}, t)
+                pose_sender.update(trackers, rotation_smoother(rotations), head, t)
 
-                if sending:
-                    # Emit EVERY tracker seen so far, every frame. OSC is
-                    # stateless and VRChat has no "tracker removed" message, so
-                    # going quiet does not retract a tracker -- it freezes it
-                    # wherever it last was.
-                    held = rotation_latch.all_current()
-                    poses, head_pose = {}, None
-                    # Extrapolate to when this pose will actually be displayed.
-                    for key, position in latch.at(t, args.lead_ms / 1000.0).items():
-                        rotation = held.get(key, (0.0, 0.0, 0.0))
-                        if key == "head":
-                            if not args.no_head:
-                                head_pose = (position, rotation)
-                        else:
-                            poses[key] = (position, rotation)
-                    sender.send_frame(poses, head_pose)
+                # With a sender thread running, sending here as well would just
+                # emit an extra frame at camera rate on top of its clock.
+                if sending and send_hz <= 0:
+                    pose_sender.send_once(t)
                 sent += 1
 
             fps = 0.9 * fps + 0.1 / max(now - last_tick, 1e-6)
@@ -270,10 +273,9 @@ def cmd_run(args, parser, *, sending=True):
                                   f"(exp {exposure:.0f}/{exp_max:.0f}us "
                                   f"gain {gain:.0f}/{gain_max:.0f})", colour))
                 if sending:
-                    stale = set(latch.stale_keys(t)) | set(rotation_latch.stale_keys(t))
+                    stale = pose_sender.stale_keys(t)
                     names = {v: k for k, v in TRACKER_ROLES.items()}
-                    live = [names.get(k, str(k)) for k in latch.at(t)
-                            if k != "head"]
+                    live = list(pose_sender.poses_at(t)[0])
                     extra.append((f"sending {len(live)} -> {args.host}:{args.port}",
                                   overlay.CYAN))
                     if stale:
@@ -303,7 +305,7 @@ def cmd_run(args, parser, *, sending=True):
                 # Stale trackers are still being SENT, so they are invisible
                 # unless reported -- a foot not measured for seconds looks fine
                 # in VRChat while being wrong.
-                stale = set(latch.stale_keys(t)) | set(rotation_latch.stale_keys(t))
+                stale = pose_sender.stale_keys(t)
                 names = {v: k for k, v in TRACKER_ROLES.items()}
                 note = ""
                 if stale:
@@ -818,6 +820,11 @@ def build_parser():
     run.add_argument("--lead-ms", type=float, default=50.0,
                      help="extrapolate this far ahead to cancel pipeline latency "
                           "(measured ~50ms; 0 disables)")
+    run.add_argument("--send-hz", type=float, default=0.0,
+                     help="send rate. 0 (default) sends once per camera frame; "
+                          "a positive value runs a sender thread at that rate, "
+                          "filling the gaps between camera frames that a "
+                          "72-90Hz headset would otherwise hold. Try 90")
     add_camera_args(run)
     add_model_args(run)
     add_stabilise_args(run)

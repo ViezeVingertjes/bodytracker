@@ -132,8 +132,16 @@ class PoseSender:
         """({index: (position, rotation)}, head_pose or None) at time `t`.
 
         Emits EVERY tracker seen so far, not just those measured this frame.
-        OSC is stateless and VRChat has no "tracker removed" message, so going
-        quiet does not retract a tracker -- it freezes it where it last was.
+        OSC is stateless and VRChat has no "tracker removed" message: stop
+        sending an address and VRChat keeps whatever it last received, so going
+        quiet does not hide a missing foot -- it freezes that foot in mid-air,
+        indefinitely. With ankles measured at 71-87% presence, silence would
+        mean feet freezing several times a second, which reads as broken
+        tracking rather than as a dropped frame.
+
+        Trackers not measured recently are reported by stale_keys() so callers
+        can say so honestly, but they keep being sent: a slightly out-of-date
+        foot beats a frozen one, and both beat VRChat inventing its own.
         """
         with self._lock:
             positions = self._positions.at(t, self.lead)
