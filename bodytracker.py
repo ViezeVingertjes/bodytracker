@@ -9,6 +9,7 @@ One entry point, five subcommands:
     bodytracker.py fake [host]     synthetic trackers, no camera -- tests the network
     bodytracker.py listen          watch VRChat's outgoing OSC, proves OSC is enabled
     bodytracker.py fetch           download the pose models (run this first)
+    bodytracker.py diagnose        why joints get dropped -- drives what to fix
 
 Before anything appears in VRChat you must, in VRChat:
   1. enable OSC          (desktop: hold R -> Options -> OSC -> Enabled)
@@ -33,8 +34,8 @@ import numpy as np
 import overlay
 from capture import DepthCamera
 from osc_out import VRCHAT_OSC_PORT, TrackerSender
-from solver import (DEFAULT_MODEL, MODEL_DIR, MODELS, PoseSolver, Skeleton,
-                    model_path)
+from solver import (DEFAULT_MODEL, MODEL_DIR, MODELS, NEEDED, PoseSolver,
+                    Skeleton, model_path)
 from stabilize import ALL_BONES, SkeletonStabilizer
 from transform import (
     DEFAULT_ROLES,
@@ -334,6 +335,146 @@ def cmd_fake(args, parser):
 
 
 # --------------------------------------------------------------------------
+# diagnose -- why are joints being dropped?
+# --------------------------------------------------------------------------
+
+def cmd_diagnose(args, _parser):
+    """Count, per landmark, WHY it was dropped. Needs a person in frame.
+
+    The solver already records a reason for every landmark it discards
+    (`background` / `no depth` / `low visibility` / `off frame`), but nothing has
+    ever aggregated them -- so which failure actually dominates has been a guess.
+    The three reasons need three different, mutually exclusive fixes:
+
+        background      the landmark pixel sits off the body, reading the wall.
+                        Fixable with depth: snap it back onto the silhouette.
+        no depth        a stereo hole ON the subject. A filter/preset problem,
+                        not a landmark problem.
+        low visibility  MediaPipe is not confident. Depth cannot help at all.
+
+    Shows a preview so you can see that you are actually framed while it counts.
+    """
+    counts = collections.defaultdict(collections.Counter)
+    present = collections.Counter()
+    tracked = frames = 0
+    # Error decomposition. Frame-to-frame deltas, not variance over the run:
+    # real motion between two frames at 30 Hz is small next to measurement
+    # noise, whereas run variance is dominated by you actually moving.
+    prev_sample = {}
+    depth_jitter = collections.defaultdict(list)
+    lateral_jitter = collections.defaultdict(list)
+
+    cv2 = overlay.require_cv2() if args.preview else None
+    print(f"Recording {args.seconds:.0f}s -- stand in frame, whole body visible, "
+          "and move naturally.", flush=True)
+
+    with open_camera(args) as cam, PoseSolver(model_path(args.model)) as solver:
+        for _ in range(10):
+            cam.read()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < args.seconds:
+            frame = cam.read()
+            if frame is None:
+                continue
+            color, depth_raw, _ = frame
+            frames += 1
+            sk = solver.solve(cam, color, depth_raw, (time.monotonic() - t0) * 1000)
+
+            if cv2 is not None:
+                canvas = color.copy()
+                overlay.draw_skeleton(canvas, sk, camera=cam)
+                remaining = args.seconds - (time.monotonic() - t0)
+                overlay.draw_lines(canvas, [
+                    ("DIAGNOSE -- why joints drop", overlay.CYAN),
+                    (f"{remaining:4.1f}s left", overlay.WHITE),
+                    *overlay.status_lines(sk, 0.0,
+                                          frame_height=canvas.shape[0])[1:],
+                ])
+                cv2.imshow("bodytracker diagnose", canvas)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+
+            if sk is None:
+                continue
+            tracked += 1
+            intrinsics = cam.intrinsics
+            for idx in NEEDED:
+                if idx in sk.joints:
+                    present[idx] += 1
+                else:
+                    counts[idx][sk.rejected.get(idx, "not found")] += 1
+
+            for idx, point in sk.joints.items():
+                pixel = sk.pixels.get(idx)
+                if pixel is None or intrinsics is None:
+                    continue
+                if idx in prev_sample:
+                    pz, ppx, ppy = prev_sample[idx]
+                    depth_jitter[idx].append(abs(point[2] - pz))
+                    # pixel delta -> metres at this joint's distance
+                    lateral_jitter[idx].append(float(np.hypot(
+                        (pixel[0] - ppx) / intrinsics.fx,
+                        (pixel[1] - ppy) / intrinsics.fy)) * point[2])
+                prev_sample[idx] = (point[2], pixel[0], pixel[1])
+
+    if cv2 is not None:
+        cv2.destroyAllWindows()
+
+    print(f"\n{frames} frames, {tracked} with a pose "
+          f"({100 * tracked / max(frames, 1):.0f}%)\n")
+    if not tracked:
+        print("No pose was ever detected -- nothing to diagnose. Were you in frame?")
+        return 1
+
+    print(f"{'joint':<12}{'present':>9}   why it was dropped")
+    print("-" * 66)
+    totals = collections.Counter()
+    for idx in NEEDED:
+        pct = 100 * present[idx] / tracked
+        why = ", ".join(f"{k} {100 * v / tracked:.0f}%"
+                        for k, v in counts[idx].most_common(3))
+        totals.update(counts[idx])
+        print(f"{overlay.NAMES.get(idx, idx):<12}{pct:8.0f}%   {why or '-'}")
+
+    if totals:
+        print("\nAggregate reason for every dropped joint:")
+        total = sum(totals.values())
+        for reason, count in totals.most_common():
+            print(f"  {reason:<16}{100 * count / total:5.0f}%   ({count})")
+    else:
+        print("\nNo joints were dropped at all.")
+
+    # Which error source dominates decides whether depth can help further.
+    # Depth jitter is what a depth camera controls; lateral jitter is landmark
+    # placement in the image, which depth cannot fix.
+    rows = [(idx, np.median(depth_jitter[idx]) * 1000,
+             np.median(lateral_jitter[idx]) * 1000)
+            for idx in NEEDED
+            if len(depth_jitter.get(idx, ())) >= 30]
+    if rows:
+        print(f"\n{'joint':<12}{'depth jitter':>14}{'lateral jitter':>16}"
+              f"{'dominant':>10}")
+        print("-" * 54)
+        for idx, d, lat in rows:
+            print(f"{overlay.NAMES.get(idx, idx):<12}{d:11.1f}mm{lat:14.1f}mm"
+                  f"{'lateral' if lat > d else 'DEPTH':>10}")
+        med_d = np.median([r[1] for r in rows])
+        med_l = np.median([r[2] for r in rows])
+        print("-" * 54)
+        print(f"{'MEDIAN':<12}{med_d:11.1f}mm{med_l:14.1f}mm")
+        print()
+        if med_l > med_d * 1.3:
+            print("Lateral (landmark placement) dominates -- depth is NOT the "
+                  "bottleneck, and further depth work has little to win.")
+        elif med_d > med_l * 1.3:
+            print("Depth dominates -- depth-side improvements (limb-centre "
+                  "fitting, better filtering) are worth building.")
+        else:
+            print("Comparable -- neither source dominates.")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # fetch -- download the pose models
 # --------------------------------------------------------------------------
 
@@ -542,6 +683,13 @@ def build_parser():
                       help="probe specific indices as a countable row, e.g. 1,2,3,4")
     fake.add_argument("--no-head", action="store_true")
     fake.set_defaults(func=cmd_fake)
+
+    diag = sub.add_parser("diagnose", help="why joints get dropped")
+    diag.add_argument("--seconds", type=float, default=20)
+    diag.add_argument("--no-preview", dest="preview", action="store_false")
+    add_camera_args(diag)
+    add_model_args(diag)
+    diag.set_defaults(func=cmd_diagnose, preview=True)
 
     fetch = sub.add_parser("fetch", help="download the pose models")
     fetch.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)

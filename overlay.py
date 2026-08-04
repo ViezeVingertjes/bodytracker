@@ -205,8 +205,11 @@ def status_lines(skeleton, fps, extra=(), frame_height=None):
         lines.append(("NO POSE DETECTED", RED))
         return lines
 
-    lines.append((f"joints {len(skeleton.joints)}/{len(S.NEEDED)}   "
-                  f"body depth {skeleton.body_depth:.2f} m", WHITE))
+    # body_depth is optional -- a backend may not provide one, and formatting
+    # None crashes the whole preview rather than degrading it.
+    depth_note = (f"   body depth {skeleton.body_depth:.2f} m"
+                  if skeleton.body_depth is not None else "")
+    lines.append((f"joints {len(skeleton.joints)}/{len(S.NEEDED)}{depth_note}", WHITE))
     framing = (framing_status(skeleton, frame_height)
                if frame_height else None)
     if framing:
