@@ -36,6 +36,61 @@ import solver as S
 
 MOVING_THRESHOLD = 0.02  # shoulder-widths/frame; above this the subject is moving
 
+# Recorded D415 result, for comparison when that camera is no longer connected.
+# From `diagnose --seconds 20` on colour: 542 frames, 100% tracked, lateral
+# jitter 3.0 mm at a measured shoulder width of 0.35 m.
+#
+# 3.0 mm / 350 mm = 0.0086 shoulder-widths, which is directly comparable to what
+# this tool measures: both are image-plane landmark motion normalised by the
+# subject's own shoulder width, so resolution and distance cancel.
+#
+# NOT comparable: bone spread. The D415 figure (26.8 mm) is a 3D limb length
+# using measured depth; this tool measures the 2D projected length, which
+# changes as a limb rotates toward or away from the camera even when tracking is
+# perfect. Only the jitter columns can be read across the two.
+D415_REFERENCE = {
+    "detection": 100.0,
+    "jitter": 3.0 / 350.0,
+    "note": "recorded earlier; D415 not connected now",
+}
+
+
+def find_webcam(preferred=None):
+    """Locate the UVC camera by name, not by a fixed index.
+
+    /dev/videoN numbering shifts whenever devices are plugged or unplugged, and
+    each camera exposes several nodes of which only some can capture. Hardcoding
+    an index produces "can't open camera by index" the moment anything changes.
+    """
+    import glob
+    import subprocess
+    if preferred is not None:
+        return preferred
+    candidates = []
+    for node in sorted(glob.glob("/dev/video*")):
+        try:
+            info = subprocess.run(["udevadm", "info", "--query=property",
+                                   f"--name={node}"], capture_output=True,
+                                  text=True, timeout=5).stdout
+        except Exception:  # noqa: BLE001
+            continue
+        if "ID_V4L_CAPABILITIES=:capture:" not in info:
+            continue
+        model = ""
+        for line in info.splitlines():
+            if line.startswith("ID_MODEL="):
+                model = line.split("=", 1)[1]
+        index = int(node.replace("/dev/video", ""))
+        # Prefer anything that is not the laptop's built-in webcam.
+        score = 0 if "ACER" in model.upper() or "HD_Webcam" in model else 1
+        candidates.append((score, index, model))
+    if not candidates:
+        raise RuntimeError("no capture-capable video device found")
+    candidates.sort(key=lambda c: (-c[0], c[1]))
+    score, index, model = candidates[0]
+    print(f"  using /dev/video{index} ({model})")
+    return index
+
 
 class ThreadedWebcam:
     """Always expose the newest frame.
@@ -119,12 +174,23 @@ def collect(get_frame, seconds, label):
     return tracks, shoulders, seen, detected
 
 
+MIN_SHOULDER_PX = 140   # below this the "subject" is too small to be a real body
+
+
 def analyse(tracks, shoulders, seen, detected):
     """Scale-free metrics, so different resolutions and distances compare."""
     if detected < 30:
         return None
+    # Guard against measuring a spurious detection. A 93px shoulder width on a
+    # 1920px frame is not a person standing for full-body tracking, and the
+    # resulting numbers looked like a 40x regression that was really just noise
+    # being normalised by a tiny scale.
+    if float(np.median(shoulders)) < MIN_SHOULDER_PX:
+        return {"invalid": f"shoulder width only {np.median(shoulders):.0f}px "
+                           f"(need >{MIN_SHOULDER_PX}) -- stand closer / in frame"}
     scale = float(np.median(shoulders))  # pixels per shoulder width
 
+    steps_all = []
     steps_still, steps_moving = [], []
     for series in tracks.values():
         arr = np.array(series)
@@ -133,6 +199,7 @@ def analyse(tracks, shoulders, seen, detected):
         deltas = np.linalg.norm(np.diff(arr, axis=0), axis=1) / scale
         # Split by whether the subject was moving: rolling-shutter skew is a
         # motion artefact, so lumping the two together would hide it.
+        steps_all.extend(deltas)
         steps_still.extend(deltas[deltas <= MOVING_THRESHOLD])
         steps_moving.extend(deltas[deltas > MOVING_THRESHOLD])
 
@@ -150,6 +217,7 @@ def analyse(tracks, shoulders, seen, detected):
 
     return {
         "detection": 100.0 * detected / max(seen, 1),
+        "jitter_all": float(np.median(steps_all)) if steps_all else float("nan"),
         "jitter_still": float(np.median(steps_still)) if steps_still else float("nan"),
         "jitter_moving": float(np.median(steps_moving)) if steps_moving else float("nan"),
         "moving_frac": 100.0 * len(steps_moving) / max(len(steps_still) + len(steps_moving), 1),
@@ -159,7 +227,7 @@ def analyse(tracks, shoulders, seen, detected):
 
 
 def run_uvc(args):
-    cam = ThreadedWebcam(args.device, args.width, args.height)
+    cam = ThreadedWebcam(find_webcam(args.device), args.width, args.height)
     time.sleep(1.5)
     try:
         return collect(lambda: cam.frame, args.seconds, "global-shutter webcam")
@@ -188,7 +256,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seconds", type=float, default=20)
-    ap.add_argument("--device", type=int, default=2, help="V4L2 index of the webcam")
+    ap.add_argument("--device", type=int, default=None,
+                    help="V4L2 index; auto-detected by name if omitted")
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--only", choices=("uvc", "realsense"))
@@ -209,29 +278,46 @@ def main(argv=None):
             print(f"  {name}: unavailable ({exc})")
 
     print()
-    print(f"{'camera':<26}{'detect':>8}{'jitter still':>14}{'jitter moving':>15}"
-          f"{'bone spread':>13}")
-    print(f"{'':<26}{'':>8}{'(shoulder widths, lower is better)':>42}")
-    print("-" * 76)
+    print(f"{'camera':<26}{'detect':>8}{'jitter all':>12}{'still':>10}{'moving':>10}")
+    print(f"{'':<26}{'':>8}{'(shoulder widths -- lower is better)':>32}")
+    print("-" * 66)
     for name, m in results.items():
         if not m:
             print(f"{name:<26}  too few detections")
             continue
-        print(f"{name:<26}{m['detection']:7.0f}%{m['jitter_still']:13.4f}"
-              f"{m['jitter_moving']:15.4f}{m['bone_spread']:13.4f}")
+        if "invalid" in m:
+            print(f"{name:<26}  NOT MEASURABLE: {m['invalid']}")
+            continue
+        print(f"{name:<26}{m['detection']:7.0f}%{m['jitter_all']:12.4f}"
+              f"{m['jitter_still']:10.4f}{m['jitter_moving']:10.4f}")
+    ref = D415_REFERENCE
+    print(f"{'D415 RGB (rolling)':<26}{ref['detection']:7.0f}%{ref['jitter']:12.4f}"
+          f"{'--':>10}{'--':>10}   <- {ref['note']}")
     for name, m in results.items():
-        if m:
+        if m and "invalid" not in m:
             print(f"  {name}: subject was {m['moving_frac']:.0f}% moving, "
                   f"shoulder width {m['scale_px']:.0f} px")
 
-    if len(results) == 2 and all(results.values()):
-        a, b = results.values()
+    live = [m for m in results.values() if m and "invalid" not in m]
+    if live:
+        best = min(live, key=lambda m: m["jitter_all"])
+        ratio = best["jitter_all"] / D415_REFERENCE["jitter"]
         print()
-        print("Rolling shutter is a MOTION artefact, so the meaningful comparison "
-              "is the 'moving' column.")
-        print("If the global shutter only wins there, that is the artefact and it "
-              "is real.")
-        print("If it wins in neither, rolling shutter costs nothing at these speeds.")
+        if ratio < 0.8:
+            print(f"Global shutter is {1/ratio:.1f}x steadier than the D415's RGB. "
+                  "The rolling-shutter cost is real.")
+        elif ratio > 1.25:
+            print(f"Global shutter is {ratio:.1f}x SHAKIER than the D415's RGB, "
+                  "so it is not buying landmark quality here.")
+        else:
+            print("Comparable to the D415's RGB -- rolling shutter is not costing "
+                  "measurable landmark quality at these speeds.")
+        print("The D415 reference lumps still and moving together, so read the "
+              "'jitter all' column against it.")
+        print()
+        print("Remember what the D415 also provided and this camera cannot: "
+              "MEASURED depth (4.0mm),")
+        print("30fps in this lighting (vs ~15), and its own IR illumination.")
     return 0
 
 
