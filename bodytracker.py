@@ -276,8 +276,9 @@ def cmd_run(args, parser, *, sending=True):
                     stale = pose_sender.stale_keys(t)
                     names = {v: k for k, v in TRACKER_ROLES.items()}
                     live = list(pose_sender.poses_at(t)[0])
-                    extra.append((f"sending {len(live)} -> {args.host}:{args.port}",
-                                  overlay.CYAN))
+                    achieved = pose_sender.frames_sent / max(t, 1e-6)
+                    extra.append((f"sending {len(live)} -> {args.host}:{args.port} "
+                                  f"@ {achieved:.0f} Hz", overlay.CYAN))
                     if stale:
                         labels = sorted({names.get(k, str(k)) for k in stale})
                         extra.append((f"STALE: {', '.join(labels)}", overlay.AMBER))
@@ -310,8 +311,14 @@ def cmd_run(args, parser, *, sending=True):
                 note = ""
                 if stale:
                     note = f"  [stale: {', '.join(sorted(names.get(k, str(k)) for k in stale))}]"
-                print(f"{frames} frames, {sent} sent ({rate:.0f}% tracked){note}",
-                      flush=True)
+                # ACHIEVED send rate, not the requested one. With a sender
+                # thread these differ: it competes for the GIL with inference,
+                # so --send-hz 90 can deliver appreciably less. Without this
+                # number a by-feel comparison of send rates is measuring
+                # something it cannot see.
+                achieved = pose_sender.frames_sent / max(t, 1e-6)
+                print(f"{frames} frames, {sent} tracked ({rate:.0f}%), "
+                      f"{achieved:.0f} Hz sent{note}", flush=True)
 
     if show:
         overlay.require_cv2().destroyAllWindows()

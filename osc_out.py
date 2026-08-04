@@ -119,6 +119,12 @@ class PoseSender:
         self._lock = threading.Lock()
         self._thread = None
         self._stop = threading.Event()
+        # Datagrams actually transmitted. A requested rate is not an achieved
+        # one: the sender thread competes for the GIL with inference and
+        # overlay drawing, so asking for 90Hz can quietly deliver 60. Reporting
+        # the request alone would let a user conclude a rate "did not help"
+        # when they never received it.
+        self.frames_sent = 0
 
     def update(self, trackers, rotations, head, t):
         """Hand the predictors one frame of measurements."""
@@ -161,6 +167,7 @@ class PoseSender:
         # Sent outside the lock: this is network I/O, and holding the lock
         # across it would stall the capture thread behind a slow socket.
         self._sender.send_frame(poses, head_pose)
+        self.frames_sent += 1
 
     def stale_keys(self, t):
         with self._lock:
