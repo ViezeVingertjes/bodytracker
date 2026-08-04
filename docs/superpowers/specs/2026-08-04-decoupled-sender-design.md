@@ -1,7 +1,19 @@
 # Decoupled sender, rotation prediction, and a measurement harness
 
 Date: 2026-08-04
-Status: approved, not yet implemented
+Status: partially superseded — see "Scope change" below
+
+## Scope change (2026-08-04)
+
+The user dropped the measurement harness in favour of manual testing. **Components
+1 (`record`) and 2 (`sweep`) are not being built.** Components 3 (decoupled sender)
+and 4 (rotation prediction) proceed as specified, and `--send-hz` still defaults to
+today's behaviour so the change can be A/B'd by hand.
+
+The consequence is worth stating plainly: the send rate will be chosen by feel
+rather than by number, which is the one lever in this project not settled by
+measurement. The "Methodology" section below is retained because it remains the
+correct way to settle it if that is ever wanted.
 
 ## Problem
 

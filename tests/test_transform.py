@@ -11,9 +11,12 @@ import pytest
 from transform import (
     TRACKER_ROLES,
     OneEuroFilter,
+    RotationPredictor,
     RotationSmoother,
     TrackerPredictor,
     basis_to_unity_euler,
+    matrix_to_rotvec,
+    rotvec_to_matrix,
     to_unity,
     unity_euler_to_matrix,
 )
@@ -101,6 +104,103 @@ class TestRotationSmoother:
         outputs = [smoother({3: np.array([0.0, float(i * 5), 0.0])})[3][1]
                    for i in range(6)]
         assert outputs[-1] > outputs[0], "normal motion must not be blocked"
+
+
+class TestRotationVectors:
+    def test_round_trip_over_random_rotations(self):
+        rng = np.random.default_rng(7)
+        for _ in range(200):
+            axis = rng.normal(size=3)
+            axis /= np.linalg.norm(axis)
+            angle = rng.uniform(0.0, np.pi - 1e-3)
+            v = axis * angle
+            assert np.allclose(matrix_to_rotvec(rotvec_to_matrix(v)), v, atol=1e-8)
+
+    def test_zero_vector_is_identity(self):
+        assert np.allclose(rotvec_to_matrix([0.0, 0.0, 0.0]), np.eye(3))
+        assert np.allclose(matrix_to_rotvec(np.eye(3)), np.zeros(3))
+
+    def test_near_pi_recovers_the_axis(self):
+        # The antisymmetric part vanishes at pi, so the generic formula divides
+        # by ~0. This is the case that silently returns garbage if unhandled.
+        for raw in ([1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 0]):
+            axis = np.array(raw, dtype=float)
+            axis /= np.linalg.norm(axis)
+            back = matrix_to_rotvec(rotvec_to_matrix(axis * np.pi))
+            assert np.isclose(np.linalg.norm(back), np.pi, atol=1e-5)
+            # k and -k describe the same rotation at pi; accept either.
+            assert (np.allclose(back / np.pi, axis, atol=1e-4)
+                    or np.allclose(back / np.pi, -axis, atol=1e-4))
+
+    def test_result_is_a_rotation(self):
+        m = rotvec_to_matrix([0.3, -0.7, 1.1])
+        assert np.allclose(m @ m.T, np.eye(3), atol=1e-12)
+        assert np.isclose(np.linalg.det(m), 1.0)
+
+
+class TestRotationPredictor:
+    @staticmethod
+    def _spin(rate_deg_per_s, steps=40, dt=1 / 30):
+        """Feed a constant yaw rate; return the predictor and the last time."""
+        predictor = RotationPredictor()
+        t = 0.0
+        for i in range(steps):
+            t = i * dt
+            predictor.update({1: np.array([0.0, rate_deg_per_s * t, 0.0])}, t)
+        return predictor, t
+
+    def test_predicts_along_measured_angular_velocity(self):
+        predictor, t = self._spin(90.0)
+        # 90 deg/s for 0.1 s is 9 degrees beyond the last observation.
+        assert np.isclose(predictor.at(t, 0.1)[1][1], 90.0 * t + 9.0, atol=1.0)
+
+    def test_zero_lead_returns_the_measurement(self):
+        predictor, t = self._spin(90.0)
+        assert np.allclose(predictor.at(t, 0.0)[1], [0.0, 90.0 * t, 0.0], atol=1e-6)
+
+    def test_stationary_rotation_is_not_moved(self):
+        predictor = RotationPredictor()
+        for i in range(20):
+            predictor.update({1: np.array([10.0, 20.0, 30.0])}, i / 30)
+        assert np.allclose(predictor.at(19 / 30, 0.1)[1], [10.0, 20.0, 30.0], atol=1e-6)
+
+    def test_single_observation_passes_through(self):
+        predictor = RotationPredictor()
+        predictor.update({1: np.array([5.0, 0.0, 0.0])}, 0.0)
+        assert np.allclose(predictor.at(0.0, 0.1)[1], [5.0, 0.0, 0.0], atol=1e-6)
+
+    def test_wrap_does_not_produce_a_spurious_flip(self):
+        # Yaw walking past +-180. Differencing euler across that wrap reports a
+        # ~360 deg/s angular velocity; matrices have no such discontinuity.
+        predictor = RotationPredictor()
+        dt = 1 / 30
+        for i in range(30):
+            yaw = (170.0 + 30.0 * i * dt + 180.0) % 360.0 - 180.0
+            predictor.update({1: np.array([0.0, yaw, 0.0])}, i * dt)
+        now = 29 * dt
+        m_pred = unity_euler_to_matrix(predictor.at(now, 0.05)[1])
+        m_prev = unity_euler_to_matrix(predictor.at(now, 0.0)[1])
+        step = np.degrees(np.linalg.norm(matrix_to_rotvec(m_pred @ m_prev.T)))
+        assert step < 10.0, f"wrap produced a {step:.0f} degree jump"
+
+    def test_rate_is_clamped(self):
+        predictor = RotationPredictor(max_rate_deg=90.0)
+        predictor.update({1: np.array([0.0, 0.0, 0.0])}, 0.0)
+        predictor.update({1: np.array([0.0, 100.0, 0.0])}, 1 / 30)  # 3000 deg/s
+        m_out = unity_euler_to_matrix(predictor.at(1 / 30, 0.1)[1])
+        m_last = unity_euler_to_matrix(np.array([0.0, 100.0, 0.0]))
+        step = np.degrees(np.linalg.norm(matrix_to_rotvec(m_out @ m_last.T)))
+        assert step <= 90.0 * 0.1 + 1e-6
+
+    def test_horizon_is_clamped(self):
+        predictor, t = self._spin(90.0)
+        assert np.allclose(predictor.at(t, 10.0)[1], predictor.at(t, 0.12)[1], atol=1e-6)
+
+    def test_stale_keys_reports_untouched_trackers(self):
+        predictor = RotationPredictor()
+        predictor.update({1: np.array([0.0, 0.0, 0.0])}, 0.0)
+        assert predictor.stale_keys(0.5) == []
+        assert predictor.stale_keys(2.0) == [1]
 
 
 class TestTrackerPredictor:

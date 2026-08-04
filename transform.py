@@ -91,6 +91,49 @@ def unity_euler_to_matrix(euler_deg):
     return ry @ rx @ rz
 
 
+def rotvec_to_matrix(v):
+    """Rotation vector (axis * angle, radians) -> rotation matrix. Rodrigues."""
+    v = np.asarray(v, dtype=float)
+    theta = float(np.linalg.norm(v))
+    if theta < 1e-9:
+        return np.eye(3)
+    k = v / theta
+    cross = np.array([[0.0, -k[2], k[1]],
+                      [k[2], 0.0, -k[0]],
+                      [-k[1], k[0], 0.0]])
+    return (np.eye(3) + math.sin(theta) * cross
+            + (1.0 - math.cos(theta)) * (cross @ cross))
+
+
+def matrix_to_rotvec(m):
+    """Rotation matrix -> rotation vector. Inverse of rotvec_to_matrix."""
+    m = np.asarray(m, dtype=float)
+    theta = math.acos(float(np.clip((np.trace(m) - 1.0) / 2.0, -1.0, 1.0)))
+    if theta < 1e-9:
+        return np.zeros(3)
+    if theta > math.pi - 1e-6:
+        # At pi the antisymmetric part is zero, so the generic formula below
+        # divides by sin(theta) ~ 0. Near pi, (R + I)/2 = k k^T, so read the
+        # axis off its diagonal -- via the LARGEST entry, because a small one
+        # loses precision in the square root.
+        outer = (m + np.eye(3)) / 2.0
+        diag = np.clip(np.diag(outer), 0.0, None)
+        i = int(np.argmax(diag))
+        k = np.zeros(3)
+        k[i] = math.sqrt(diag[i])
+        for j in range(3):
+            if j != i:
+                k[j] = outer[i][j] / k[i]
+        n = float(np.linalg.norm(k))
+        if n < 1e-9:
+            return np.zeros(3)
+        return k / n * theta
+    axis = np.array([m[2][1] - m[1][2],
+                     m[0][2] - m[2][0],
+                     m[1][0] - m[0][1]])
+    return axis * (theta / (2.0 * math.sin(theta)))
+
+
 def _orthonormal(primary, secondary):
     """Build a right/up/forward basis from two roughly-perpendicular vectors.
 
@@ -413,6 +456,69 @@ class RotationSmoother:
 
 def matrix_to_unity_euler(m):
     return basis_to_unity_euler(m[:, 0], m[:, 1], m[:, 2])
+
+
+class RotationPredictor:
+    """Rotational twin of TrackerPredictor: latch plus angular velocity.
+
+    Positions were being extrapolated forward to cancel pipeline latency while
+    rotations were held at their last measured value, so every frame shipped a
+    pose that disagreed with itself -- a hip predicted 50ms ahead carrying a hip
+    rotation 50ms behind, both derived from the same joints. VRChat's IK
+    resolves against both, so the mismatch is not cosmetic.
+
+    All extrapolation happens on MATRICES. Euler angles cannot be extrapolated:
+    a yaw crossing +-180 wraps, and differencing across that wrap reports a
+    ~360 deg/s angular velocity that would fling the tracker round. This is the
+    same reason RotationSmoother refuses to average euler angles.
+
+    Angular velocity is EMA-smoothed for the reason linear velocity is: it is a
+    difference of two noisy orientations, so multiplying it by a lead time would
+    amplify that noise straight into the output.
+    """
+
+    def __init__(self, velocity_alpha=0.35, max_rate_deg=720.0, max_horizon=0.12):
+        self.velocity_alpha = velocity_alpha
+        # Ceiling on extrapolated angular speed, mirroring TrackerPredictor's
+        # max_speed. Two full turns a second is far beyond real body motion but
+        # well below the spike a single bad frame produces.
+        self.max_rate = math.radians(max_rate_deg)
+        self.max_horizon = max_horizon
+        self._matrix = {}
+        self._omega = {}
+        self._time = {}
+
+    def update(self, rotations, t):
+        for key, euler in rotations.items():
+            m = unity_euler_to_matrix(euler)
+            previous, previous_t = self._matrix.get(key), self._time.get(key)
+            if previous is not None and previous_t is not None and t > previous_t:
+                raw = matrix_to_rotvec(m @ previous.T) / (t - previous_t)
+                rate = float(np.linalg.norm(raw))
+                if rate > self.max_rate:
+                    raw = raw * (self.max_rate / rate)
+                old = self._omega.get(key)
+                self._omega[key] = (raw if old is None else
+                                    old * (1 - self.velocity_alpha)
+                                    + raw * self.velocity_alpha)
+            self._matrix[key] = m
+            self._time[key] = t
+
+    def at(self, t, lead=0.0):
+        """Every rotation seen so far, extrapolated to `t + lead`, as euler."""
+        out = {}
+        for key, m in self._matrix.items():
+            omega = self._omega.get(key)
+            if omega is None:
+                out[key] = matrix_to_unity_euler(m)
+                continue
+            horizon = float(np.clip((t - self._time[key]) + lead,
+                                    0.0, self.max_horizon))
+            out[key] = matrix_to_unity_euler(rotvec_to_matrix(omega * horizon) @ m)
+        return out
+
+    def stale_keys(self, t, max_stale=1.0):
+        return [k for k, ts in self._time.items() if t - ts > max_stale]
 
 
 class TrackerPredictor:
