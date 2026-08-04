@@ -222,6 +222,22 @@ Measured rather than assumed — full tables in `SETUP.md`:
 `benchmark.py {presets,body,modes,filters,models}` re-runs any of it. `SETUP.md` also
 records the RealSense options audited and deliberately *not* used, with reasons.
 
+## Lighting: this needs a lit room
+
+**It does not work in the dark**, despite being a depth camera. Landmarks are
+found by MediaPipe in the **RGB** image; depth only supplies their 3D positions
+afterwards. Kill the lights and detection finds nothing to place.
+
+Depth itself is unaffected (the IR projector runs at full power), so the failure
+is asymmetric and easy to misread: the depth stream looks perfectly healthy while
+tracking has stopped completely. `bodytracker.py preview` shows `NO POSE
+DETECTED` with a good depth image in `d` view — that combination means "too dark",
+not "camera broken".
+
+A depth-native tracker (Nuitrack, evaluated on a branch and dropped) would work in
+the dark. It tracked noticeably worse in the light, which is why it was dropped —
+but low-light operation is the one thing it clearly buys.
+
 ## Hands
 
 Your controllers own the hands. VRChat's OSC tracker API has **no hand or wrist slot**

@@ -161,9 +161,24 @@ class Skeleton:
 # not, and resolves sub-millimetre. Measured on a static surface, temporal
 # jitter: median 1.00 mm, mean 0.82 mm, trimmed mean 0.88 mm.
 #
-# Outlier resistance is no longer the median's job anyway: by this point the
-# samples have already been gated against the body depth, so gross background
-# values are gone before the reducer sees them.
+# That reasoning held on a static surface and FAILED on a body. Measured over
+# 9135 joint-samples with a person in frame:
+#
+#     median 4.00mm   near 4.00mm   mean 4.31mm   trimmed 4.32mm
+#
+# Two lessons. Outlier resistance still earns its keep on a body -- the claim
+# that body-depth gating made it unnecessary was wrong, because a patch on a
+# limb straddles edges constantly and averaging blends them.
+#
+# And the comparison is not apples-to-apples: median and near return raw
+# quantised values, so their frame-to-frame differences are whole millimetres
+# and any change below one quantum registers as exactly ZERO, pulling the
+# median difference down. A continuous estimator gets no such free zeros. The
+# metric structurally favours coarse estimators, so `median` may have won by
+# being coarser rather than better.
+#
+# Conclusion: the reducer barely matters (7% across all four). `median` is kept
+# because it ties for best on every measurement taken and was the original.
 #
 # `near` is the interesting one for limbs. Depth jitter on a BODY is ~4 mm versus
 # ~1 mm on a static surface, which is not quantisation -- it is the landmark
@@ -171,7 +186,7 @@ class Skeleton:
 # The nearest surface point of a convex limb is its axis, and unlike the median
 # that is invariant to where on the limb the landmark happens to land.
 DEPTH_ESTIMATORS = ("median", "mean", "trimmed", "near")
-DEFAULT_DEPTH_ESTIMATOR = "trimmed"
+DEFAULT_DEPTH_ESTIMATOR = "median"
 
 
 def reduce_depth(samples, estimator=DEFAULT_DEPTH_ESTIMATOR):

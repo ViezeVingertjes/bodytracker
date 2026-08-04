@@ -631,6 +631,40 @@ Measured paired on identical frames:
   the projected pattern. No use here.
 - **IMU.** The D415 has none (that is the D435i).
 
+## Where the remaining error actually is
+
+Measured with `bodytracker.py diagnose` on a real body, 542 frames:
+
+```
+100% tracked, every joint 100% present, 2 dropped joints in the whole run
+depth jitter 4.0mm   vs   lateral jitter 3.0mm   (depth dominant on 13 of 17 joints)
+```
+
+**There is no dropout problem to solve.** The earlier ankle losses (71-87%) were
+framing. Depth-side error dominates what remains.
+
+But the reducer is not the lever. Over 9135 joint-samples:
+
+| estimator | depth jitter |
+|---|---|
+| median (default) | 4.00 mm |
+| near (20th pct) | 4.00 mm |
+| mean | 4.31 mm |
+| trimmed mean | 4.32 mm |
+
+7% across all four, and the comparison is **not apples-to-apples**: `median` and
+`near` return raw 1 mm-quantised values, so sub-quantum changes register as
+exactly zero and drag their score down. The metric favours coarse estimators.
+`median` is kept because it ties for best everywhere measured, not because it is
+proven better.
+
+**The real number is this:** depth jitter is ~1 mm on a static surface and ~4 mm
+on a body. That 4x is not quantisation and not the reducer — it is the landmark
+sliding across a curved limb and sampling a different part of it each frame.
+Closing it needs limb-axis reasoning (estimate the limb's direction and radius
+from the depth patch, project the landmark onto the axis), which is a real build
+and has not been attempted.
+
 ## Still to do
 
 - [x] ~~Confirm VRChat accepts our OSC trackers~~ — all 8 indices, local desktop VRChat
