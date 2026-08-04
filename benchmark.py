@@ -165,7 +165,7 @@ def bench_models(args):
                         (f"BENCHMARK  model={variant}", overlay.CYAN),
                         (f"{args.seconds - (time.monotonic() - t0):4.1f}s left",
                          overlay.WHITE),
-                        *overlay.status_lines(sk, 0.0)[1:],
+                        *overlay.status_lines(sk, 0.0, frame_height=canvas.shape[0])[1:],
                     ])
                     cv2.imshow("bodytracker benchmark", canvas)
                     if (cv2.waitKey(1) & 0xFF) == ord("q"):
@@ -262,7 +262,7 @@ def bench_body(args):
                         (f"BENCHMARK  {name}", overlay.CYAN),
                         (f"{remaining:4.1f}s left   move around naturally",
                          overlay.WHITE),
-                        *overlay.status_lines(sk, 0.0)[1:],
+                        *overlay.status_lines(sk, 0.0, frame_height=canvas.shape[0])[1:],
                     ])
                     cv2.imshow("bodytracker benchmark", canvas)
                     if (cv2.waitKey(1) & 0xFF) == ord("q"):

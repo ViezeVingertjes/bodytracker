@@ -188,8 +188,13 @@ def framing_status(skeleton, height):
     return head_ok, feet_ok
 
 
-def status_lines(skeleton, fps, extra=()):
-    """The standard readout shared by both preview surfaces."""
+def status_lines(skeleton, fps, extra=(), frame_height=None):
+    """The standard readout shared by every preview surface.
+
+    frame_height must be the ACTUAL canvas height. It was hardcoded to 480 at
+    first, which silently mis-reported "FEET in frame" at any other resolution --
+    the one readout people rely on to position themselves.
+    """
     lines = [(f"{fps:4.1f} fps", WHITE)]
     if skeleton is None:
         lines.append(("NO POSE DETECTED", RED))
@@ -197,7 +202,8 @@ def status_lines(skeleton, fps, extra=()):
 
     lines.append((f"joints {len(skeleton.joints)}/{len(S.NEEDED)}   "
                   f"body depth {skeleton.body_depth:.2f} m", WHITE))
-    framing = framing_status(skeleton, 480)
+    framing = (framing_status(skeleton, frame_height)
+               if frame_height else None)
     if framing:
         head_ok, feet_ok = framing
         lines.append((f"HEAD {'in' if head_ok else 'OUT OF'} frame",

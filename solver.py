@@ -36,12 +36,24 @@ from mediapipe.tasks.python.vision import (  # noqa: E402
     RunningMode,
 )
 
-# Accuracy-first default. MediaPipe ships three pose models; `heavy` is the most
-# accurate. It is affordable here: the pipeline is camera-limited at 30 fps with
-# roughly 20 ms/frame spare, so the extra inference cost comes out of idle time.
-# Step down with --model if your machine cannot hold 30 fps.
+# The most accurate model that still runs in real time. Measured on this machine
+# with a person actually in frame:
+#
+#     model    solve      achieved fps
+#     full     16.69ms    29.7    <- holds the camera's 30 fps
+#     heavy    51.15ms    15.0    <- half framerate
+#
+# `heavy` is more accurate per frame and was briefly the default, on the strength
+# of a benchmark that timed all three at ~11ms. That benchmark ran on blank
+# frames, where the detector finds nothing and short-circuits before the landmark
+# stage -- so it measured the give-up path, not tracking, and the three models
+# looked identical. With a body present, heavy costs 3x more.
+#
+# Halving the update rate is worse for VRChat than any per-frame accuracy gain:
+# trackers arrive at 15 Hz, and every stabilisation stage has half the samples.
+# So `full` is the accuracy-first choice *subject to staying real time*.
 MODELS = ("lite", "full", "heavy")
-DEFAULT_MODEL = "heavy"
+DEFAULT_MODEL = "full"
 
 
 def model_path(name):

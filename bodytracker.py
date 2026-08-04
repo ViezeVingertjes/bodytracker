@@ -223,7 +223,8 @@ def cmd_run(args, parser, *, sending=True):
                     if stale:
                         labels = sorted({names.get(k, str(k)) for k in stale})
                         extra.append((f"STALE: {', '.join(labels)}", overlay.AMBER))
-                overlay.draw_lines(canvas, overlay.status_lines(skeleton, fps, extra))
+                overlay.draw_lines(canvas, overlay.status_lines(
+                    skeleton, fps, extra, frame_height=canvas.shape[0]))
                 cv2.imshow("bodytracker", canvas)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):

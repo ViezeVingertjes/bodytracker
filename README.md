@@ -106,10 +106,34 @@ bodytracker.py run [host] [--port 9000]
 Every `--no-*` switch exists so a stage can be measured against its own absence with
 `bodytracker.py measure`, not as a workaround.
 
-Default is **hip + 2 feet** — the standard 3-point FBT set. VRChat's own docs note
-that fewer trackers often track better, because its IK compensates well for a missing
-point and badly for a wrong one, and a single camera's knee/elbow estimates are its
-least reliable. `--roles` can send up to all 8.
+## Which trackers to send
+
+Default is **hip + chest + both feet**. VRChat's docs warn that fewer trackers often
+track better — but that is a warning about *reliability*, not a rule about count: its
+IK compensates well for a **missing** point and badly for a **wrong** one. So the
+roles were measured rather than guessed, over 446 frames of real movement:
+
+| role | idx | measured | jitter | |
+|---|---|---|---|---|
+| hip | 1 | 100% | 4.2 mm | core |
+| chest | 2 | 100% | **3.1 mm** | core — the steadiest point we produce |
+| left_foot | 3 | 99% | 7.9 mm | standard FBT |
+| right_foot | 4 | 100% | 4.8 mm | standard FBT |
+| left_knee | 5 | 100% | 6.7 mm | optional |
+| right_knee | 6 | 100% | 5.6 mm | optional |
+| left_elbow | 7 | 100% | 5.5 mm | not recommended |
+| right_elbow | 8 | 94% | 6.7 mm | not recommended |
+
+- **Chest** is in by default on the numbers — it is our most stable tracker, and gives
+  VRChat torso lean and twist that hip alone cannot.
+- **Knees** track well and are one flag away
+  (`--roles hip,chest,left_foot,right_foot,left_knee,right_knee`). They are not default
+  because VRChat's IK already infers knee position from hip and foot, so they add
+  little unless you kneel or sit often.
+- **Elbows are not recommended.** Your hands come from the Quest controllers, so an
+  elbow tracker constrains an arm whose endpoint is *already* authoritatively tracked.
+  A slightly-wrong elbow fights the controller instead of helping. Available via
+  `--roles` if you want to judge for yourself.
 
 ## What is verified, and what is not
 
@@ -157,8 +181,9 @@ Measured rather than assumed — full tables in `SETUP.md`:
   beats every alternative on every metric. Note a *static-scene* benchmark says the
   opposite; benchmark on a person.
 - **848×480 @ 30 fps** — 1280×720 carries 50% more depth noise at identical coverage.
-- **`heavy` pose model** by default (most accurate). `--model full` / `--model lite`
-  step down on slower machines.
+- **`full` pose model** — the most accurate that holds 30 fps. `heavy` is 3× slower
+  with a body in frame (51 ms/frame → 15 fps), and halving the update rate costs more
+  than its per-frame accuracy gains. `--model heavy` if your hardware can afford it.
 - **CPU inference.** No usable GPU path exists here and none is needed — the pipeline
   is camera-limited at 30 fps with ~20 ms/frame spare.
 

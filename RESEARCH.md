@@ -269,7 +269,7 @@ bodytracker/
   solver.py      # Nuitrack skeleton  OR  MediaPipe+depth landmark lift
   transform.py   # camera space → Unity space, joint orientations, One-Euro filtering
   osc_out.py     # python-osc UDP client → QUEST_IP:9000
-  main.py
+  bodytracker.py <- single CLI: run / preview / fake / listen / measure
 ```
 
 `pip install python-osc`. The transform step is where the bugs will be — camera space is

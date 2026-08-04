@@ -179,10 +179,33 @@ TRACKER_ROLES = {
     "right_elbow": 8,
 }
 
-# VRChat's own docs say fewer trackers often track better, because its IK
-# compensates well for missing points but poorly for bad ones. A single camera's
-# knee and elbow estimates are its least reliable, so the default is hip + feet.
-DEFAULT_ROLES = ("hip", "left_foot", "right_foot")
+# VRChat's docs warn that fewer trackers often track better, because its IK
+# compensates well for a MISSING point and badly for a WRONG one. That is a
+# warning about reliability, not a rule about count -- so the roles were measured
+# rather than guessed. Per-role, over a 446-frame recording of real movement:
+#
+#     role          idx  measured  jitter
+#     hip             1      100%   4.2mm   core
+#     chest           2      100%   3.1mm   core -- our STEADIEST tracker
+#     left_foot       3       99%   7.9mm   standard FBT
+#     right_foot      4      100%   4.8mm   standard FBT
+#     left_knee       5      100%   6.7mm   good, but IK usually solves knees fine
+#     right_knee      6      100%   5.6mm   "
+#     left_elbow      7      100%   5.5mm   shares the arm with your controller
+#     right_elbow     8       94%   6.7mm   "
+#
+# Default is hip + chest + both feet. Chest earns its place on the numbers: it is
+# the single most stable point we produce, and it gives VRChat torso lean and
+# twist that hip-only cannot.
+#
+# Knees are available and track well (--roles ...,left_knee,right_knee); they are
+# not default because VRChat's IK already infers knee position from hip and foot,
+# so they add little unless you kneel or sit a lot.
+#
+# Elbows are deliberately NOT default. Your hands come from the Quest controllers,
+# so an elbow tracker constrains an arm whose endpoint is already authoritatively
+# tracked -- a slightly-wrong elbow fights the controller rather than helping.
+DEFAULT_ROLES = ("hip", "chest", "left_foot", "right_foot")
 
 
 def _foot(skeleton, ankle, toe):

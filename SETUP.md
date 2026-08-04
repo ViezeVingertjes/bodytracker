@@ -131,7 +131,7 @@ aligning depth→colour costs essentially no usable area here.
 ## Camera is mounted upside down
 
 The D415 is physically inverted, so `DepthCamera(rotate_180=True)` is the normal mode
-here (`tools/preview.py` defaults to it; pass `--upright` if the camera is ever remounted).
+here (the app defaults to it; pass `--upright` if the camera is ever remounted).
 
 This rotates the frames **and** the intrinsics together. Rotating only the image is the
 trap: MediaPipe would detect the pose happily, the preview would look perfect, and
@@ -149,7 +149,7 @@ than silently mis-correcting if it ever sees non-zero coeffs.
 
 ## OSC output — verified
 
-`osc_out.py` + `tools/fake_tracker.py` were tested against a loopback OSC receiver. All
+`osc_out.py` + `bodytracker.py fake` were tested against a loopback OSC receiver. All
 eight expected addresses arrive with correct float payloads:
 
 ```
@@ -186,7 +186,7 @@ Results:
 
 **How to probe indices without misreading the result:** 4 at a time, chest height
 (y≈1.10), within a ±0.4 m row, alternating bob phase so neighbours move in opposition.
-`tools/fake_tracker.py --indices 1,2,3,4`. A vertical stack of 8 spanning y=0.2–1.6 put
+`bodytracker.py fake --indices 1,2,3,4`. A vertical stack of 8 spanning y=0.2–1.6 put
 index 8 within 4 cm of the head anchor at y=1.70; they merged and the count read as 7.
 Spreading markers too far instead pushes them off screen, which reads as absent.
 
@@ -196,8 +196,8 @@ Spreading markers too far instead pushes them off screen, which reads as absent.
 |---|---|
 | `capture.py` | `DepthCamera` — aligned colour+depth, `deproject()` pixel→metres, `depth_at()` hole-tolerant depth sampling |
 | `osc_out.py` | `TrackerSender` — VRChat OSC tracker output |
-| `tools/fake_tracker.py` | Sends head + hip + 2 feet at 30 Hz. No camera needed. Defaults to `127.0.0.1`. `--indices 1,2,3,4` probes specific indices as a countable row. |
-| `tools/osc_listen.py` | Listens on 9001 for VRChat's *outgoing* OSC — proves OSC is enabled |
+| `bodytracker.py fake` | Synthetic trackers at 30 Hz, no camera. `--indices 1,2,3,4` probes specific indices as a countable row. |
+| `bodytracker.py listen` | Listens on 9001 for VRChat's *outgoing* OSC — proves OSC is enabled |
 
 ## Testing against VRChat on this machine
 
@@ -222,7 +222,7 @@ request asking for exactly this, for OSC tracker debugging). So on this machine 
 
 ## Tracking quality — measured 2026-08-04
 
-Everything below is measured with `tools/measure_stability.py`, which records once
+Everything below is measured with `bodytracker.py measure`, which records once
 and replays the **same** recording through every configuration. Re-running the camera
 per configuration compares different movements, not different settings.
 
@@ -376,7 +376,7 @@ turned hard (0.15 m), still rejects the original false positive (0.105 m).
 
 Dead code removed (`capture.depth_at`, superseded by `depth_samples` + body-depth
 gating). `stale_keys` and `last_rejection` were unused but worth keeping, so they are
-now surfaced in `main.py`'s status output — a stale tracker is still being *sent*, so
+now surfaced in the tracker's status output — a stale tracker is still being *sent*, so
 without reporting it looks correct in VRChat while being wrong.
 
 `ruff check --select E,F,W,B,SIM,UP,C4,RET,ARG`: clean.
@@ -496,14 +496,29 @@ not on furniture.**
 smaller correlation windows per pixel. 60 fps halves exposure and costs 38% more
 noise. The default is a genuine optimum, not a compromise.
 
-### Pose model: `heavy` (accuracy-first default)
+### Pose model: `full` — the most accurate one that stays real time
 
-All three time ~11 ms on a blank frame, but that measures the detector's *give-up*
-path, not the tracking path, so it does not discriminate — a proper comparison needs
-a person in frame (`benchmark.py models`) and has not been run. `heavy` is chosen
-because it is MediaPipe's most accurate variant and the pipeline is camera-limited at
-30 fps with ~20 ms/frame spare, so the cost comes out of idle time. `--model full`
-or `--model lite` steps down if a slower machine cannot hold 30 fps.
+Measured with a person in frame:
+
+| model | solve | p95 | achieved fps | holds 30 fps? |
+|---|---|---|---|---|
+| **full** | **16.69 ms** | 19.45 ms | **29.7** | **yes** |
+| heavy | 51.15 ms | 56.77 ms | 15.0 | no |
+
+`heavy` was briefly the default, on the strength of a benchmark that timed all three
+models at ~11 ms. **That benchmark ran on blank frames**, where the detector finds
+nothing and short-circuits before the landmark stage — so it measured the give-up
+path, not tracking, and every model looked identical. With a body present, `heavy`
+costs 3× more and halves the framerate.
+
+Halving the update rate is worse for VRChat than any per-frame accuracy gain:
+trackers arrive at 15 Hz and every stabilisation stage gets half the samples. So the
+default is the most accurate model *subject to staying real time*. `--model heavy` is
+there if you ever run this on hardware that can afford it.
+
+**The general lesson, twice over now:** benchmark on a real body. The same mistake
+picked the wrong visual preset (a static desk favours HIGH_ACCURACY, which is the
+worst preset on an actual person) and the wrong model.
 
 ### GPU: unavailable, and not needed
 
@@ -543,6 +558,6 @@ opens the camera once and is unaffected.
 - [ ] **Stand at 2.4–2.6 m** — the last recording was at 3.12 m, past the camera's 3 m
       ideal range. Closer should measurably reduce noise (untested: proving it needs two
       recordings of the *same* movement at two distances, not two different sessions)
-- [ ] Point `main.py` at the Quest's LAN IP and confirm trackers in OSC Debug
+- [ ] Point `bodytracker.py run <quest-ip>` at the Quest and confirm trackers in OSC Debug
 - [ ] **Resolve index→role during a real FBT calibration** (only the Quest can)
 - [ ] Confirm VRChat interprets our rotations as intended (`--no-rotations` if not)
