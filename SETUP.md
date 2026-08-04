@@ -555,6 +555,71 @@ therefore **off by default** in benchmarks — check framing with
 `bodytracker.py preview` first, then benchmark. The live tracker's `run --preview`
 opens the camera once and is unaffected.
 
+## RealSense feature audit (2026-08-04)
+
+Every option the device exposes was enumerated and assessed, rather than assuming
+the obvious ones were the only ones.
+
+### Adopted
+
+**Threshold filter, first in the chain** (0.3–4.0 m). Everything beyond that is wall
+or another room. Letting it into the chain actively hurts: the spatial filter drags
+far values across limb edges and hole filling pulls them into gaps on the body.
+Cutting first means later stages only see plausible subject depth.
+
+**Hole filling mode 2 (`nearest_from_around`), not the default 1
+(`farthest_from_around`).** The default is actively wrong for this application: it
+fills a hole with the *furthest* neighbour, so a gap on a torso or leg is filled with
+the wall behind the person. The solver then either rejects that joint as background
+(losing it) or believes it. We track a foreground subject, so the nearest neighbour is
+the correct guess.
+
+Measured paired on identical frames:
+
+| variant | in-volume coverage | noise |
+|---|---|---|
+| farthest fill, no clipping (old) | 90.1% | 5.38 mm |
+| nearest fill | 90.9% | 5.30 mm |
+| **nearest + threshold** | **94.4%** | 5.34 mm |
+
++4.3 points of usable coverage at identical noise.
+
+### Already correct, confirmed
+
+- **Laser power 360 (max)** and emitter on — the single biggest coverage lever indoors.
+- **Auto Exposure Priority = 0** on the RGB sensor. Had this been 1, auto-exposure
+  would be permitted to *drop the framerate* in dim light. It defaults to 0 here.
+- **Global Time Enabled = 1** — hardware timestamps in a common time domain.
+- **Filter order** matches Intel's documented recommendation exactly
+  (threshold → depth2disparity → spatial → temporal → disparity2depth → hole filling).
+
+### Considered and rejected, with reasons
+
+- **Frames Queue Size** (default 16). Measured frame age at queue sizes 16 / 4 / 1:
+  35.4 / 33.7 / 35.8 ms — no difference, because the pipeline consumes every frame in
+  real time and the queue never backs up. Left at default.
+- **Depth Units** (0.001 m, settable to 1e-6). Finer units would only help if the
+  hardware resolved finer than 1 mm. It does not: at 2.5 m with a 55 mm baseline and
+  fx≈608, one subpixel disparity step is ≈5.8 mm. **That also explains the measured
+  ~5–6.5 mm noise floor — it is disparity quantisation, not filtering.** No gain
+  available here.
+- **Decimation filter.** Changes resolution, which would break the pixel
+  correspondence between the colour frame MediaPipe runs on and the depth frame.
+- **HDR (`Hdr Enabled`, sequence options).** Alternates two exposures and merges them,
+  which would improve depth in mixed lighting but halves the effective temporal
+  resolution. We already established that halving the update rate costs more than
+  per-frame quality gains.
+- **Advanced Mode** is available and enabled on this device, exposing the full
+  DepthControl parameter set. Not pursued: the visual presets *are* advanced-mode
+  configurations, and MEDIUM_DENSITY was already chosen by measurement on a body.
+  This is the obvious place to go for further depth tuning.
+- **Manual RGB exposure.** Auto-exposure can reach 10 ms, which risks motion blur and
+  therefore landmark error, but pinning it lower darkens the image and costs landmark
+  confidence. Left on auto; revisit only if blur is observed.
+- **`Emitter Enabled = 2`** (alternating on/off) exists for capturing clean IR without
+  the projected pattern. No use here.
+- **IMU.** The D415 has none (that is the D435i).
+
 ## Still to do
 
 - [x] ~~Confirm VRChat accepts our OSC trackers~~ — all 8 indices, local desktop VRChat

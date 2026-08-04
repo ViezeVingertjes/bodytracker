@@ -29,6 +29,8 @@ class DepthCamera:
         fps=DEFAULT_FPS,
         rotate_180=False,
         filtering=True,
+        min_distance=0.3,
+        max_distance=4.0,
     ):
         self.width = width
         self.height = height
@@ -40,6 +42,10 @@ class DepthCamera:
         self.rotate_180 = rotate_180
         # Post-processing can be switched off to measure what it is buying.
         self.filtering = filtering
+        # Working volume. 4 m comfortably covers standing at 2.3-3 m plus arm
+        # reach, while excluding the rest of the room.
+        self.min_distance = min_distance
+        self.max_distance = max_distance
         self.sensor_warnings = []
         self.laser_power = None
         self.visual_preset_applied = False
@@ -59,6 +65,15 @@ class DepthCamera:
         # weights near and far samples correctly. Smoothing raw metres instead
         # over-smooths close geometry and under-smooths far, which at 2.5 m is
         # exactly where a body is.
+        # Clip to the working volume BEFORE anything else. Everything past
+        # `max_distance` is wall, furniture or another room, and letting it into
+        # the chain actively hurts: the spatial filter drags far values across
+        # limb edges, and hole filling pulls them into gaps on the body. Cutting
+        # first means the later stages only ever see plausible subject depth.
+        self._threshold = rs.threshold_filter()
+        self._threshold.set_option(rs.option.min_distance, min_distance)
+        self._threshold.set_option(rs.option.max_distance, max_distance)
+
         self._to_disparity = rs.disparity_transform(True)
         self._to_depth = rs.disparity_transform(False)
 
@@ -78,10 +93,16 @@ class DepthCamera:
         self._temporal.set_option(rs.option.filter_smooth_alpha, 0.4)
         self._temporal.set_option(rs.option.filter_smooth_delta, 20)
 
-        # Fills residual holes from the nearest valid neighbour. Runs last so it
-        # only touches pixels the real filters could not recover.
+        # Runs last, so it only touches pixels the real filters could not recover.
+        #
+        # Mode 2 = nearest_from_around, NOT the default 1 = farthest_from_around.
+        # This matters and the default is actively wrong for us: filling a hole
+        # with the FURTHEST neighbour means a gap on a person's torso or leg gets
+        # filled with the wall behind them. The solver then either rejects that
+        # joint as background (losing it) or, worse, believes it. We track a
+        # foreground subject, so the nearest neighbour is the right guess.
         self._hole_filling = rs.hole_filling_filter()
-        self._hole_filling.set_option(rs.option.holes_fill, 1)
+        self._hole_filling.set_option(rs.option.holes_fill, 2)
 
     def __enter__(self):
         self.start()
@@ -220,6 +241,7 @@ class DepthCamera:
         # colour image the pose model runs on. (Decimation is deliberately not in
         # the chain -- it changes resolution and would break that correspondence.)
         if self.filtering:
+            depth_frame = self._threshold.process(depth_frame)
             depth_frame = self._to_disparity.process(depth_frame)
             depth_frame = self._spatial.process(depth_frame)
             depth_frame = self._temporal.process(depth_frame)

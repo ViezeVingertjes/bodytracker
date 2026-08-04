@@ -195,7 +195,12 @@ Measured rather than assumed — full tables in `SETUP.md`:
 - **CPU inference.** No usable GPU path exists here and none is needed — the pipeline
   is camera-limited at 30 fps with ~20 ms/frame spare.
 
-`benchmark.py {presets,body,modes,filters,models}` re-runs any of it.
+- **Depth chain**: threshold clip (0.3–4 m) → disparity → spatial → temporal →
+  disparity⁻¹ → hole fill (**nearest**, not the default farthest, which would fill
+  gaps on your body with the wall behind you). +4.3 pts usable coverage.
+
+`benchmark.py {presets,body,modes,filters,models}` re-runs any of it. `SETUP.md` also
+records the RealSense options audited and deliberately *not* used, with reasons.
 
 ## Hands
 

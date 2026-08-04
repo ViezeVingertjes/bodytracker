@@ -118,7 +118,7 @@ def cmd_run(args, parser, *, sending=True):
         print(f"sending to {args.host}:{args.port} at {SEND_HZ} Hz")
         for role in roles:
             print(f"  {role:<12} -> tracker index {TRACKER_ROLES[role]}")
-        print("  (index->role mapping is unconfirmed -- see RESEARCH.md section 2)")
+        print("  (indices follow SlimeVR's convention -- see RESEARCH.md section 2)")
     else:
         print("preview only -- nothing is being sent")
     print("ctrl-c to stop" + ("   |   window: q quit, d depth view" if show else ""),
