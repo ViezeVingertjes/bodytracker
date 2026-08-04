@@ -317,6 +317,9 @@ def cmd_run(args, parser, *, sending=True):
                 # number a by-feel comparison of send rates is measuring
                 # something it cannot see.
                 achieved = pose_sender.frames_sent / max(t, 1e-6)
+                if pose_sender.send_errors:
+                    note += (f"  [{pose_sender.send_errors} send errors, "
+                             f"last: {pose_sender.last_error}]")
                 print(f"{frames} frames, {sent} tracked ({rate:.0f}%), "
                       f"{achieved:.0f} Hz sent{note}", flush=True)
 
@@ -341,16 +344,24 @@ def cmd_preview(args, parser):
 # All 8 trackers VRChat supports, placed where each role sits on a body. This is
 # the COMPLETE set: there is no hand, wrist or head body tracker. Hands come from
 # the controllers, and the head address is a space anchor, not a tracker.
-ANATOMICAL = [
-    (1, "hip", 0.00, 1.00, 0.5, 0.05),
-    (2, "chest", 0.00, 1.35, 0.7, 0.05),
-    (3, "left foot", -0.15, 0.08, 0.9, 0.06),
-    (4, "right foot", 0.15, 0.08, 1.1, 0.06),
-    (5, "left knee", -0.16, 0.50, 1.3, 0.06),
-    (6, "right knee", 0.16, 0.50, 1.5, 0.06),
-    (7, "left elbow", -0.35, 1.15, 1.7, 0.06),
-    (8, "right elbow", 0.35, 1.15, 1.9, 0.06),
+#
+# Indices are looked up in TRACKER_ROLES rather than written out again. They were
+# written out once, in VRChat's prose ordering (chest=2, feet=3/4) -- the mapping
+# transform.py explains is wrong relative to the whole ecosystem -- so `fake` and
+# `run` placed DIFFERENT bodies. That defeats the entire point of this command:
+# it exists to be the trustworthy reference when `run` looks wrong.
+_BODY = [
+    ("hip",         0.00, 1.00, 0.5, 0.05),
+    ("chest",       0.00, 1.35, 0.7, 0.05),
+    ("left_foot",  -0.15, 0.08, 0.9, 0.06),
+    ("right_foot",  0.15, 0.08, 1.1, 0.06),
+    ("left_knee",  -0.16, 0.50, 1.3, 0.06),
+    ("right_knee",  0.16, 0.50, 1.5, 0.06),
+    ("left_elbow", -0.35, 1.15, 1.7, 0.06),
+    ("right_elbow", 0.35, 1.15, 1.9, 0.06),
 ]
+ANATOMICAL = [(TRACKER_ROLES[role], role.replace("_", " "), x, y, freq, amp)
+              for role, x, y, freq, amp in _BODY]
 
 
 def probe_layout(indices):
@@ -419,7 +430,7 @@ def cmd_depth_estimators(args, _parser):
     compare different movements, which is the mistake that made depth filtering
     look 4x worse than it is earlier in this project.
     """
-    from solver import DEPTH_ESTIMATORS, reduce_depth
+    from solver import DEFAULT_DEPTH_ESTIMATOR, DEPTH_ESTIMATORS, reduce_depth
 
     cv2 = overlay.require_cv2() if args.preview else None
     print(f"Recording {args.seconds:.0f}s -- stand in frame, whole body "
@@ -479,7 +490,9 @@ def cmd_depth_estimators(args, _parser):
         results[estimator] = float(np.median(per_joint))
         print(f"{estimator:<12}{results[estimator]:>32.2f}mm")
     best = min(results, key=results.get)
-    current = "trimmed"
+    # Read the default rather than restating it. Hardcoding "trimmed" here
+    # meant this tool advised switching to the estimator already in force.
+    current = DEFAULT_DEPTH_ESTIMATOR
     print(f"\nbest: {best} ({results[best]:.2f}mm)   current default: {current} "
           f"({results[current]:.2f}mm)")
     if best != current:

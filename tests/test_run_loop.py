@@ -110,6 +110,37 @@ def count_datagrams(monkeypatch, port, send_hz, seconds=1.2):
     return len(received)
 
 
+class TestFakeMatchesRun:
+    """`fake` must place the same body `run` does.
+
+    It did not: its index->role table was written out by hand in VRChat's prose
+    ordering (chest=2, feet=3/4), which transform.py explains is wrong relative
+    to the whole ecosystem, while `run` sends chest=6, feet=2/3. A user probing
+    with `fake` and comparing against `run` was reading two different bodies --
+    which defeats the point of a command that exists to be the trustworthy
+    reference when `run` looks wrong.
+    """
+
+    def test_every_fake_tracker_uses_the_real_index(self):
+        import bodytracker
+        from transform import TRACKER_ROLES
+
+        for index, label, *_ in bodytracker.ANATOMICAL:
+            role = label.replace(" ", "_")
+            assert role in TRACKER_ROLES, f"fake invents a role: {role!r}"
+            assert index == TRACKER_ROLES[role], (
+                f"fake sends {role} as index {index}, run sends it as "
+                f"{TRACKER_ROLES[role]}")
+
+    def test_fake_covers_every_role_exactly_once(self):
+        import bodytracker
+        from transform import TRACKER_ROLES
+
+        indices = [index for index, *_ in bodytracker.ANATOMICAL]
+        assert sorted(indices) == sorted(TRACKER_ROLES.values())
+        assert len(set(indices)) == len(indices), "duplicate index in fake"
+
+
 class TestRunLoopSendRate:
     def test_default_sends_once_per_camera_frame(self, monkeypatch):
         sent = count_datagrams(monkeypatch, 9961, send_hz=0)
@@ -127,10 +158,13 @@ class TestRunLoopSendRate:
 
     def test_sender_thread_does_not_outlive_the_loop(self, monkeypatch):
         count_datagrams(monkeypatch, 9964, send_hz=90)
+        # Matches on thread NAME. This filtered on repr() before, which never
+        # contained "PoseSender" because the thread was created unnamed -- so
+        # the only assertion in the suite claiming to check thread lifecycle
+        # matched nothing and could never fail.
         leaked = [t for t in threading.enumerate()
-                  if t.is_alive() and t is not threading.current_thread()
-                  and "PoseSender" in repr(t)]
-        assert leaked == []
+                  if t.is_alive() and t.name == "PoseSender"]
+        assert leaked == [], f"sender thread survived cmd_run: {leaked}"
         # Nothing should still be transmitting after cmd_run returned.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.bind(("127.0.0.1", 9964))

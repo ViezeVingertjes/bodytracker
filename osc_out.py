@@ -51,11 +51,15 @@ class TrackerSender:
         self._client = UDPClient(host, port)
 
     def send_frame(self, trackers, head=None):
-        """Send a whole frame as a single OSC bundle.
+        """Send a whole frame as a single OSC bundle. True if anything went out.
 
         trackers: {index -> position} or {index -> (position, rotation)}, where
                   index is 1..8.
         head:     position, or (position, rotation), or None.
+
+        The return value exists so callers can count DATAGRAMS rather than
+        calls: an empty frame is a no-op, and counting it inflates any rate
+        derived from the count.
         """
         # IMMEDIATELY: VRChat should apply the pose on arrival, not schedule it.
         # A timestamped bundle would rely on clock agreement between this machine
@@ -77,8 +81,10 @@ class TrackerSender:
             )
             empty = False
 
-        if not empty:
-            self._client.send(bundle.build())
+        if empty:
+            return False
+        self._client.send(bundle.build())
+        return True
 
 
 class PoseSender:
@@ -119,12 +125,17 @@ class PoseSender:
         self._lock = threading.Lock()
         self._thread = None
         self._stop = threading.Event()
-        # Datagrams actually transmitted. A requested rate is not an achieved
-        # one: the sender thread competes for the GIL with inference and
-        # overlay drawing, so asking for 90Hz can quietly deliver 60. Reporting
-        # the request alone would let a user conclude a rate "did not help"
-        # when they never received it.
+        # Datagrams actually transmitted -- counted from send_frame's return
+        # value, not from calls, because a frame with nothing in it sends
+        # nothing. A requested rate is not an achieved one: the sender thread
+        # competes for the GIL with inference and overlay drawing, so asking
+        # for 90Hz can quietly deliver 60. Reporting the request alone would
+        # let a user conclude a rate "did not help" when they never received it.
         self.frames_sent = 0
+        # Sends that raised. This is the ONLY signal that the thread hit
+        # trouble, so it is surfaced rather than kept internal.
+        self.send_errors = 0
+        self.last_error = None
 
     def update(self, trackers, rotations, head, t):
         """Hand the predictors one frame of measurements."""
@@ -166,8 +177,8 @@ class PoseSender:
         poses, head_pose = self.poses_at(t)
         # Sent outside the lock: this is network I/O, and holding the lock
         # across it would stall the capture thread behind a slow socket.
-        self._sender.send_frame(poses, head_pose)
-        self.frames_sent += 1
+        if self._sender.send_frame(poses, head_pose):
+            self.frames_sent += 1
 
     def stale_keys(self, t):
         with self._lock:
@@ -178,14 +189,33 @@ class PoseSender:
         if self.hz <= 0 or self._thread is not None:
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        # Named so a leaked thread is identifiable in threading.enumerate() --
+        # a test asserted on exactly that and silently matched nothing.
+        self._thread = threading.Thread(target=self._run, name="PoseSender",
+                                        daemon=True)
         self._thread.start()
 
     def _run(self):
         period = 1.0 / self.hz
         next_tick = self._clock()
         while not self._stop.is_set():
-            self.send_once(self._clock())
+            try:
+                self.send_once(self._clock())
+            except Exception as exc:  # noqa: BLE001 - see below
+                # A failed send must NOT take the thread down. Going quiet does
+                # not retract trackers in VRChat, it freezes them in mid-air
+                # indefinitely -- the exact failure poses_at documents as
+                # unacceptable -- and a dead thread produces it permanently
+                # while the capture loop carries on none the wiser.
+                #
+                # These errors are transient by nature and this feature makes
+                # them likelier: python-osc's UDP socket is non-blocking, so it
+                # raises EAGAIN when the send buffer backs up and ENETUNREACH
+                # when the link drops, and both are far more probable at 90Hz
+                # over WiFi to a headset than at 30Hz. Recovering is the whole
+                # point; the count is surfaced so it cannot fail unnoticed.
+                self.send_errors += 1
+                self.last_error = exc
             next_tick += period
             delay = next_tick - self._clock()
             if delay < 0:
@@ -193,7 +223,11 @@ class PoseSender:
                 # otherwise be repaid as a burst of back-to-back sends.
                 next_tick = self._clock()
                 delay = 0.0
-            self._stop.wait(delay)
+            # Never wait longer than one period. A clock that stalls -- as it
+            # does before cmd_run knows its t0 -- otherwise lets next_tick run
+            # away from it, and the debt is repaid as a visible one-off stall
+            # once the clock starts moving.
+            self._stop.wait(min(delay, period))
 
     def stop(self):
         self._stop.set()

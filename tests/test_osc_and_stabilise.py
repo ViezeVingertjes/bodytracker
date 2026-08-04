@@ -41,13 +41,19 @@ def receive_one(port, timeout=2.0):
 
 
 class Recorder:
-    """Stands in for TrackerSender, keeping every frame it was handed."""
+    """Stands in for TrackerSender, keeping every frame it was handed.
+
+    Mirrors the real contract: returns True only when something would actually
+    go on the wire, so callers counting datagrams behave as they do in
+    production.
+    """
 
     def __init__(self):
         self.frames = []
 
     def send_frame(self, poses, head=None):
         self.frames.append((dict(poses), head))
+        return bool(poses) or head is not None
 
 
 class TestPoseSender:
@@ -158,6 +164,44 @@ class TestPoseSender:
             assert np.isclose(position[0], position[1])
             assert np.isclose(rotation[1], position[0], atol=1e-6), (
                 "rotation came from a different update than the position")
+
+    def test_a_failing_send_does_not_kill_the_thread(self):
+        # The failure this guards against is not a crash -- it is SILENCE. A
+        # dead sender thread leaves the capture loop running happily while
+        # every tracker in VRChat freezes in mid-air, because OSC has no
+        # tracker-removed message. python-osc's socket is non-blocking, so
+        # EAGAIN and ENETUNREACH are live possibilities at 90Hz over WiFi.
+        calls = []
+
+        class Flaky:
+            def send_frame(self, poses, head=None):
+                calls.append(1)
+                if len(calls) == 3:
+                    raise OSError(101, "Network is unreachable")
+                return bool(poses) or head is not None
+
+        positions, rotations = TrackerPredictor(), RotationPredictor()
+        sender = PoseSender(Flaky(), positions, rotations, hz=200)
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        with sender:
+            time.sleep(0.2)
+            alive = sender.is_running()
+
+        assert alive, "one send error killed the sender thread"
+        assert len(calls) > 5, "thread stopped sending after the error"
+        assert sender.send_errors == 1
+        assert isinstance(sender.last_error, OSError)
+
+    def test_frames_sent_counts_datagrams_not_calls(self):
+        # An empty frame transmits nothing, so counting it inflates the
+        # achieved-Hz figure that exists to reveal the bug above.
+        sender, recorder = self._wired()
+        sender.send_once(0.0)                      # nothing measured yet
+        assert sender.frames_sent == 0, "counted a frame that sent no datagram"
+        sender.update({1: np.zeros(3)}, {}, None, 0.0)
+        sender.send_once(0.0)
+        assert sender.frames_sent == 1
+        assert len(recorder.frames) == 2           # called twice, sent once
 
     def test_stale_keys_unions_both_predictors(self):
         sender, _ = self._wired()
