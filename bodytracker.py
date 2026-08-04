@@ -68,8 +68,15 @@ def add_camera_args(parser):
                              "Higher = brighter IR, slightly noisier depth")
     parser.add_argument("--ir-mode", choices=("global", "masked", "clahe",
                                               "masked_clahe"),
-                        default="masked_clahe",
-                        help="IR contrast handling (default: masked_clahe)")
+                        default="masked",
+                        help="IR contrast handling (default: masked). clahe "
+                             "amplifies the projector pattern -- only use it "
+                             "with --ir-emitter off")
+    parser.add_argument("--ir-emitter", choices=("on", "off", "alternate"),
+                        default="on",
+                        help="projector during IR capture. 'off' gives a clean "
+                             "image but needs another IR light source and costs "
+                             "depth coverage")
     parser.add_argument("--source", choices=("color", "ir"), default="color",
                         help="image the pose model sees. 'ir' works in the dark "
                              "and needs no depth alignment")
@@ -107,7 +114,8 @@ def open_camera(args):
     return DepthCamera(args.width, args.height,
                        rotate_180=args.rotate_180, filtering=args.filtering,
                        source=getattr(args, "source", "color"),
-                       ir_mode=getattr(args, "ir_mode", "masked_clahe"),
+                       ir_mode=getattr(args, "ir_mode", "masked"),
+                       ir_emitter=getattr(args, "ir_emitter", "on"),
                        ir_gain=getattr(args, "ir_gain", None) or 128)
 
 
@@ -232,6 +240,13 @@ def cmd_run(args, parser, *, sending=True):
                 overlay.draw_skeleton(canvas, drawable, camera=cam,
                                       inferred=stabilizer.inferred)
                 extra = []
+                margin = cam.light_margin()
+                if margin:
+                    exposure, exp_max, gain, gain_max, stops = margin
+                    colour = overlay.GREEN if stops > 2 else overlay.AMBER
+                    extra.append((f"light headroom {stops:.1f} stops "
+                                  f"(exp {exposure:.0f}/{exp_max:.0f}us "
+                                  f"gain {gain:.0f}/{gain_max:.0f})", colour))
                 if sending:
                     stale = set(latch.stale_keys(t)) | set(rotation_latch.stale_keys(t))
                     names = {v: k for k, v in TRACKER_ROLES.items()}

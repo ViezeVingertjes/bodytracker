@@ -40,7 +40,7 @@ DEFAULT_FPS = 30
 DEFAULT_IR_GAIN = 128
 
 IR_MODES = ("global", "masked", "clahe", "masked_clahe")
-DEFAULT_IR_MODE = "masked_clahe"
+DEFAULT_IR_MODE = "masked"
 
 
 def normalise_ir(ir, depth=None, mode=DEFAULT_IR_MODE, depth_scale=0.001,
@@ -66,9 +66,10 @@ def normalise_ir(ir, depth=None, mode=DEFAULT_IR_MODE, depth_scale=0.001,
     masked       percentiles computed only over pixels inside the working
                  volume, so the SUBJECT sets the exposure rather than the
                  furniture. This is what depth is for.
-    clahe        local histogram equalisation, which fixes a gradient a global
-                 stretch cannot: it brightens the dim lower body without
-                 blowing out the bright upper body.
+    clahe        local histogram equalisation. DO NOT USE with the emitter on:
+                 it amplifies the projector's dot pattern along with everything
+                 else, and took tracking from 48% to zero. Kept only for use
+                 with an emitter-off / externally-lit IR image.
     masked_clahe both -- restrict the range to the subject, then equalise
                  locally.
     """
@@ -106,6 +107,7 @@ class DepthCamera:
         source="color",
         ir_mode=DEFAULT_IR_MODE,
         ir_gain=DEFAULT_IR_GAIN,
+        ir_emitter="on",
     ):
         self.width = width
         self.height = height
@@ -131,6 +133,20 @@ class DepthCamera:
         self.source = source
         self.ir_mode = ir_mode
         self.ir_gain = ir_gain
+        # Projector state in IR mode -- the central tension of IR tracking:
+        #
+        #   on   depth works (97% coverage) but the projector's dot pattern is
+        #        painted over everything, and the pose model cannot read a body
+        #        through it. Measured 48% detection, and 0% once CLAHE amplified
+        #        the dots.
+        #   off  a clean, natural IR photograph -- what the model actually wants
+        #        -- but the projector WAS the illumination, so depth coverage
+        #        collapses to ~30-75%.
+        #
+        # Mode 2 ("alternate") is accepted by this device but measured as
+        # behaving like OFF: laser metadata reads 0 on every frame and coverage
+        # drops to 29.7%. Not a usable middle ground here.
+        self.ir_emitter = ir_emitter
         # Post-processing can be switched off to measure what it is buying.
         self.filtering = filtering
         # Working volume. 4 m comfortably covers standing at 2.3-3 m plus arm
@@ -265,16 +281,26 @@ class DepthCamera:
             try_set(rs.option.exposure, 33000.0, "ir_exposure")
             try_set(rs.option.gain, float(self.ir_gain), "ir_gain")
 
-        # The IR projector is what gives stereo something to match on blank
-        # surfaces. Full power is the single biggest coverage win indoors.
-        try_set(rs.option.emitter_enabled, 1.0, "emitter_enabled")
-        try:
-            if depth_sensor.supports(rs.option.laser_power):
-                rng = depth_sensor.get_option_range(rs.option.laser_power)
-                depth_sensor.set_option(rs.option.laser_power, rng.max)
-                self.laser_power = rng.max
-        except Exception as exc:  # noqa: BLE001
-            self.sensor_warnings.append(f"laser_power: {exc}")
+        # ORDER MATTERS. Setting laser_power re-enables the emitter, so it must
+        # come FIRST and be skipped entirely when the emitter is meant to be off
+        # -- otherwise `--ir-emitter off` silently does nothing, which is exactly
+        # what happened (coverage read 97% when it should have collapsed).
+        emitter = {"on": 1.0, "off": 0.0, "alternate": 2.0}[
+            self.ir_emitter if self.source == "ir" else "on"]
+
+        if emitter:
+            # Full power is the single biggest depth-coverage win indoors: the
+            # projector is what gives stereo something to match on blank walls,
+            # clothing and skin.
+            try:
+                if depth_sensor.supports(rs.option.laser_power):
+                    rng = depth_sensor.get_option_range(rs.option.laser_power)
+                    depth_sensor.set_option(rs.option.laser_power, rng.max)
+                    self.laser_power = rng.max
+            except Exception as exc:  # noqa: BLE001
+                self.sensor_warnings.append(f"laser_power: {exc}")
+
+        try_set(rs.option.emitter_enabled, emitter, "emitter_enabled")
 
     def _try_visual_preset(self):
         """Attempt HIGH_DENSITY once. Returns True when it has been applied.
@@ -318,6 +344,35 @@ class DepthCamera:
                     "visual_preset: never applied (running on camera default)"
                 )
         return False
+
+    def light_margin(self):
+        """How much low-light headroom the colour sensor still has.
+
+        Returns (exposure_us, exposure_max, gain, gain_max, stops_left) or None.
+
+        Worth surfacing because the intuition is wrong: in a normally-lit room
+        auto-exposure sits at ~166us of a 10000us maximum, so there is roughly
+        60x of exposure headroom plus 2x of gain before the sensor runs out --
+        about 100x, or ~7 stops. A "dim" room is nowhere near that limit, which
+        is why colour keeps working long after it feels too dark to the eye.
+
+        The real low-light failure is not loss of detection but motion blur once
+        exposure grows long, and noise once gain is high.
+        """
+        if self.source != "color":
+            return None
+        try:
+            device = self._pipeline.get_active_profile().get_device()
+            sensor = next(s for s in device.sensors
+                          if "RGB" in s.get_info(rs.camera_info.name))
+            exposure = sensor.get_option(rs.option.exposure)
+            exp_max = sensor.get_option_range(rs.option.exposure).max
+            gain = sensor.get_option(rs.option.gain)
+            gain_max = sensor.get_option_range(rs.option.gain).max
+        except Exception:  # noqa: BLE001
+            return None
+        headroom = (exp_max / max(exposure, 1)) * (gain_max / max(gain, 1))
+        return exposure, exp_max, gain, gain_max, float(np.log2(max(headroom, 1)))
 
     def stop(self):
         self._pipeline.stop()
