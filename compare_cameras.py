@@ -128,8 +128,22 @@ class ThreadedWebcam:
         self.cap.release()
 
 
-def collect(get_frame, seconds, label):
-    """Run the pose model over frames, returning per-landmark pixel tracks."""
+BONES_2D = [
+    (S.L_SHOULDER, S.R_SHOULDER), (S.L_SHOULDER, S.L_ELBOW),
+    (S.R_SHOULDER, S.R_ELBOW), (S.L_ELBOW, S.L_WRIST), (S.R_ELBOW, S.R_WRIST),
+    (S.L_SHOULDER, S.L_HIP), (S.R_SHOULDER, S.R_HIP), (S.L_HIP, S.R_HIP),
+    (S.L_HIP, S.L_KNEE), (S.R_HIP, S.R_KNEE),
+    (S.L_KNEE, S.L_ANKLE), (S.R_KNEE, S.R_ANKLE),
+]
+
+
+def collect(get_frame, seconds, label, preview=True):
+    """Run the pose model over frames, returning per-landmark pixel tracks.
+
+    Shows a preview, because without one there is no way to know you are framed
+    -- the first run of this tool measured a spurious 93px "body" and reported a
+    40x regression that was pure noise.
+    """
     from mediapipe import Image, ImageFormat
     from mediapipe.tasks.python import BaseOptions
     from mediapipe.tasks.python.vision import (
@@ -146,6 +160,10 @@ def collect(get_frame, seconds, label):
     shoulders = []
     seen = detected = 0
     timestamp = 0
+    cv2 = None
+    if preview:
+        import overlay
+        cv2 = overlay.require_cv2()
     print(f"  {label}: recording {seconds:.0f}s -- stand in frame", flush=True)
     start = time.monotonic()
     try:
@@ -159,6 +177,43 @@ def collect(get_frame, seconds, label):
             timestamp += 34
             result = landmarker.detect_for_video(
                 Image(image_format=ImageFormat.SRGB, data=rgb), timestamp)
+
+            if cv2 is not None:
+                canvas = frame.copy()
+                marks_p = result.pose_landmarks[0] if result.pose_landmarks else None
+                width_px = 0.0
+                if marks_p:
+                    pts = {i: (int(marks_p[i].x * width), int(marks_p[i].y * height))
+                           for i in S.NEEDED}
+                    for a, b in BONES_2D:
+                        cv2.line(canvas, pts[a], pts[b], (0, 220, 0), 2)
+                    for pt in pts.values():
+                        cv2.circle(canvas, pt, 4, (0, 220, 0), -1)
+                    width_px = float(np.hypot(
+                        (marks_p[S.L_SHOULDER].x - marks_p[S.R_SHOULDER].x) * width,
+                        (marks_p[S.L_SHOULDER].y - marks_p[S.R_SHOULDER].y) * height))
+                good = width_px >= MIN_SHOULDER_PX
+                lines = [
+                    (f"{label}", (255, 220, 0)),
+                    (f"{seconds - (time.monotonic() - start):4.1f}s left", (255, 255, 255)),
+                    (f"shoulder width {width_px:.0f}px "
+                     f"(need >{MIN_SHOULDER_PX})",
+                     (0, 220, 0) if good else (60, 60, 255)),
+                    ("SAMPLE VALID -- move around" if good
+                     else "TOO SMALL / NOT FRAMED -- step closer",
+                     (0, 220, 0) if good else (60, 60, 255)),
+                ]
+                y = 30
+                for text, colour in lines:
+                    cv2.putText(canvas, text, (12, y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, colour, 2, cv2.LINE_AA)
+                    y += 30
+                shown = canvas if canvas.shape[1] <= 1280 else cv2.resize(
+                    canvas, (1280, int(1280 * canvas.shape[0] / canvas.shape[1])))
+                cv2.imshow("camera comparison", shown)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+
             if not result.pose_landmarks:
                 continue
             detected += 1
@@ -171,6 +226,8 @@ def collect(get_frame, seconds, label):
                                             (left.y - right.y) * height)))
     finally:
         landmarker.close()
+        if cv2 is not None:
+            cv2.destroyAllWindows()
     return tracks, shoulders, seen, detected
 
 
@@ -230,7 +287,8 @@ def run_uvc(args):
     cam = ThreadedWebcam(find_webcam(args.device), args.width, args.height)
     time.sleep(1.5)
     try:
-        return collect(lambda: cam.frame, args.seconds, "global-shutter webcam")
+        return collect(lambda: cam.frame, args.seconds, "global-shutter webcam",
+                       args.preview)
     finally:
         cam.close()
 
@@ -247,7 +305,8 @@ def run_realsense(args):
             got = cam.read()
             return got[0] if got else None
 
-        return collect(frame, args.seconds, "D415 RGB (rolling shutter)")
+        return collect(frame, args.seconds, "D415 RGB (rolling shutter)",
+                       args.preview)
     finally:
         cam.stop()
 
@@ -261,8 +320,9 @@ def main(argv=None):
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--only", choices=("uvc", "realsense"))
+    ap.add_argument("--no-preview", dest="preview", action="store_false")
     ap.add_argument("--upright", dest="rotate_180", action="store_false")
-    ap.set_defaults(rotate_180=True)
+    ap.set_defaults(rotate_180=True, preview=True)
     args = ap.parse_args(argv)
 
     runners = [("global-shutter webcam", run_uvc), ("D415 RGB", run_realsense)]
