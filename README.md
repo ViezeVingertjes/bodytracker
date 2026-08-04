@@ -234,9 +234,36 @@ tracking has stopped completely. `bodytracker.py preview` shows `NO POSE
 DETECTED` with a good depth image in `d` view — that combination means "too dark",
 not "camera broken".
 
-A depth-native tracker (Nuitrack, evaluated on a branch and dropped) would work in
-the dark. It tracked noticeably worse in the light, which is why it was dropped —
-but low-light operation is the one thing it clearly buys.
+### `--source ir` — the fix for dark rooms
+
+```bash
+.venv/bin/python bodytracker.py preview --source ir
+```
+
+Feeds the pose model the **infrared** image instead of RGB. The D415's projector is
+its own illumination, so the IR imagers see a well-lit person with the lights off.
+
+Why IR and not a rendered depth map: BlazePose is trained on photographs, and a
+false-colour depth image is far outside that distribution. IR is still a real
+photograph, just at 850 nm — a person in IR looks like a black-and-white photo,
+which the model handles.
+
+Two things come free with it:
+
+- **No depth alignment.** Depth is computed in the left IR imager's own frame, so a
+  landmark pixel and its depth pixel are the same pixel by construction, rather than
+  being made to correspond by `rs.align`.
+- **Constant illumination.** The projector does not care about your room lighting, so
+  exposure does not swing.
+
+The raw IR frame is dark (measured mean 21/255) because the imagers are exposed for
+depth rather than for a photograph, so it is contrast-stretched in software. Raising
+the sensor's own exposure would brighten IR at the cost of the depth quality that
+shares those imagers.
+
+A depth-native tracker (Nuitrack, evaluated on a branch and dropped) also works in the
+dark, but tracked noticeably worse in the light. `--source ir` gets the low-light
+benefit without giving up MediaPipe.
 
 ## Hands
 

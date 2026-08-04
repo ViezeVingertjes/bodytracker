@@ -63,6 +63,9 @@ def add_camera_args(parser):
                         help="camera mounted the right way up (default: upside down)")
     parser.add_argument("--no-filter", dest="filtering", action="store_false",
                         help="disable RealSense depth post-processing")
+    parser.add_argument("--source", choices=("color", "ir"), default="color",
+                        help="image the pose model sees. 'ir' works in the dark "
+                             "and needs no depth alignment")
     parser.set_defaults(rotate_180=True, filtering=True)
 
 
@@ -95,7 +98,8 @@ def make_stabilizer(args):
 
 def open_camera(args):
     return DepthCamera(args.width, args.height,
-                       rotate_180=args.rotate_180, filtering=args.filtering)
+                       rotate_180=args.rotate_180, filtering=args.filtering,
+                       source=getattr(args, "source", "color"))
 
 
 def parse_roles(parser, spec):

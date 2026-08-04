@@ -21,6 +21,26 @@ DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30
 
 
+def normalise_ir(ir):
+    """Single-channel IR -> a 3-channel image the pose model can use.
+
+    The stereo imagers are exposed for depth, not for a photograph, so the raw
+    IR frame is very dark (measured mean 21/255, 95th percentile 38). MediaPipe
+    needs recognisable contrast, so the usable range is stretched to full scale.
+
+    Percentiles rather than min/max: a single hot pixel or a specular highlight
+    would otherwise set the scale and flatten everything else.
+
+    Done in software on purpose -- raising the sensor's exposure or gain would
+    brighten IR at the cost of the depth quality that shares those imagers.
+    """
+    lo, hi = np.percentile(ir, (2, 98))
+    if hi - lo < 1:
+        lo, hi = float(ir.min()), max(float(ir.max()), lo + 1)
+    stretched = np.clip((ir.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255)
+    return np.repeat(stretched.astype(np.uint8)[:, :, None], 3, axis=2)
+
+
 class DepthCamera:
     def __init__(
         self,
@@ -31,6 +51,7 @@ class DepthCamera:
         filtering=True,
         min_distance=0.3,
         max_distance=4.0,
+        source="color",
     ):
         self.width = width
         self.height = height
@@ -40,6 +61,20 @@ class DepthCamera:
         # principal point in the old place, and deprojection would silently
         # return mirrored 3D coordinates while the preview looked perfectly fine.
         self.rotate_180 = rotate_180
+        # Which image the pose model sees: "color" or "ir".
+        #
+        # IR matters for two reasons. It works in a DARK ROOM -- the projector is
+        # the illumination, so the imagers see a well-lit person with the lights
+        # off, whereas RGB sees nothing and MediaPipe finds nothing to place.
+        #
+        # And depth is computed in the left IR imager's own frame, so IR needs no
+        # rs.align at all: a landmark pixel and its depth pixel are the same
+        # pixel by construction, instead of being made to correspond.
+        #
+        # A rendered depth map would NOT work here. BlazePose is trained on
+        # photographs; a false-colour depth image is far outside that
+        # distribution. IR is still a real photograph, just at 850nm.
+        self.source = source
         # Post-processing can be switched off to measure what it is buying.
         self.filtering = filtering
         # Working volume. 4 m comfortably covers standing at 2.3-3 m plus arm
@@ -115,9 +150,16 @@ class DepthCamera:
         self._config.enable_stream(
             rs.stream.depth, self.width, self.height, rs.format.z16, self.fps
         )
-        self._config.enable_stream(
-            rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps
-        )
+        if self.source == "ir":
+            # Imager 1 is the left one, which is depth's reference frame.
+            self._config.enable_stream(
+                rs.stream.infrared, 1, self.width, self.height,
+                rs.format.y8, self.fps
+            )
+        else:
+            self._config.enable_stream(
+                rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps
+            )
         profile = self._pipeline.start(self._config)
 
         device = profile.get_device()
@@ -230,11 +272,16 @@ class DepthCamera:
         # once frames are genuinely flowing.
         if not self.visual_preset_applied:
             self._try_visual_preset()
-        aligned = self._align.process(frames)
 
-        depth_frame = aligned.get_depth_frame()
-        color_frame = aligned.get_color_frame()
-        if not depth_frame or not color_frame:
+        if self.source == "ir":
+            # No alignment: depth already lives in this imager's frame.
+            depth_frame = frames.get_depth_frame()
+            image_frame = frames.get_infrared_frame(1)
+        else:
+            aligned = self._align.process(frames)
+            depth_frame = aligned.get_depth_frame()
+            image_frame = aligned.get_color_frame()
+        if not depth_frame or not image_frame:
             return None
 
         # Filter AFTER aligning, so filtered depth stays pixel-aligned with the
@@ -253,7 +300,9 @@ class DepthCamera:
             intr = depth_frame.profile.as_video_stream_profile().intrinsics
             self._intrinsics = self._rotated_intrinsics(intr) if self.rotate_180 else intr
 
-        color = np.asanyarray(color_frame.get_data())
+        color = np.asanyarray(image_frame.get_data())
+        if self.source == "ir":
+            color = normalise_ir(color)
         depth = np.asanyarray(depth_frame.get_data())
         if self.rotate_180:
             # Reversing both axes is a 180 deg rotation. Copy, because MediaPipe
