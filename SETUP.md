@@ -780,11 +780,15 @@ option tested.
 
 ## Still to do
 
-- [x] ~~Confirm VRChat accepts our OSC trackers~~ — all 8 indices, local desktop VRChat
-- [x] ~~Depth post-processing, stabilisation, rotations, occlusion handling~~
-- [ ] **Stand at 2.4–2.6 m** — the last recording was at 3.12 m, past the camera's 3 m
-      ideal range. Closer should measurably reduce noise (untested: proving it needs two
-      recordings of the *same* movement at two distances, not two different sessions)
-- [ ] Point `bodytracker.py run <quest-ip>` at the Quest and confirm trackers in OSC Debug
-- [ ] **Resolve index→role during a real FBT calibration** (only the Quest can)
-- [ ] Confirm VRChat interprets our rotations as intended (`--no-rotations` if not)
+Only one thing blocks calling this verified, and it needs a Quest:
+
+- [ ] **Calibrate FBT in VRChat on the headset.** Confirm trackers land on the
+      right body parts (validating the SlimeVR index mapping) and that rotations
+      help rather than hurt (`--no-rotations` if they hurt). Everything up to the
+      network is measured; this last step never has been.
+
+Optional, and honestly diminishing:
+
+- [ ] Limb-axis reasoning for the residual depth error — the one depth-native idea
+      identified and never built
+- [ ] Tape-measure test to settle the 43.1° vs 40° vertical FOV question

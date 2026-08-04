@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bodytracker"
+version = "1.0.0"
+description = "Full-body tracking for VRChat from an Intel RealSense depth camera, over OSC"
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "ViezeVingertjes" }]
+keywords = ["vrchat", "realsense", "osc", "full-body-tracking", "vr", "mediapipe"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video :: Capture",
+]
+
+# Upper bounds are deliberate, not lazy. MediaPipe 1.0 removed mp.solutions and
+# ships no Windows wheel; Windows resolves to 0.10.x, which this code is verified
+# against. numpy 2 breaks some prebuilt extensions in this space.
+dependencies = [
+    "mediapipe>=0.10.9,<2",
+    "numpy>=1.24",
+    "opencv-contrib-python>=4.8",
+    "python-osc>=1.8",
+]
+
+[project.optional-dependencies]
+# pyrealsense2 has Windows wheels for 3.10-3.14 but none for Ubuntu 26.04's
+# Python, where it must be built from source. See SETUP.md.
+camera = ["pyrealsense2>=2.54"]
+dev = ["pytest>=7", "ruff>=0.1"]
+
+[project.urls]
+Homepage = "https://github.com/ViezeVingertjes/bodytracker"
+Issues = "https://github.com/ViezeVingertjes/bodytracker/issues"
+
+[project.scripts]
+bodytracker = "bodytracker:main"
+
+# Flat layout: these are top-level modules, not a package. Setuptools refuses to
+# guess in that case, and listing them explicitly also keeps the benchmark and
+# comparison scripts out of an install.
+[tool.setuptools]
+py-modules = [
+    "bodytracker", "capture", "solver", "skeleton",
+    "stabilize", "transform", "osc_out", "overlay",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "SIM", "UP", "C4", "RET", "ARG"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -221,7 +221,7 @@ def bench_body(args):
     print(f"{'preset':<16}{'detected':>10}{'joints/frame':>14}{'jitter':>10}"
           f"{'bone spread':>13}{'ankles':>9}")
     print("-" * 72)
-    import solver as S
+    import skeleton as S
     for name, preset in presets:
         cam = DepthCamera(rotate_180=args.rotate_180, filtering=True)
         cam.start()
@@ -315,14 +315,15 @@ def main(argv=None):
                     help=f"any of: {', '.join(BENCHMARKS)}, or 'all'")
     ap.add_argument("--seconds", type=float, default=12,
                     help="duration per model in the `models` benchmark")
-    ap.add_argument("--upright", dest="rotate_180", action="store_false")
+    ap.add_argument("--flip", dest="rotate_180", action="store_true",
+                    help="camera is mounted upside down")
     # Off by default: the overlay window hangs when the camera is reopened
     # between benchmark passes (reproducible on the third preset). Benchmarks
     # do not need it, and a hang mid-measurement is worse than no picture --
     # use `bodytracker.py preview` to check framing first, then benchmark.
     ap.add_argument("--preview", action="store_true",
                     help="show the overlay window (known to hang between passes)")
-    ap.set_defaults(rotate_180=True, preview=False)
+    ap.set_defaults(rotate_180=False, preview=False)
     args = ap.parse_args(argv)
 
     names = list(BENCHMARKS) if "all" in args.which else args.which

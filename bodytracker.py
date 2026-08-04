@@ -60,8 +60,9 @@ LOSS_REPORT_S = 0.75
 def add_camera_args(parser):
     parser.add_argument("--width", type=int, default=848)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--upright", dest="rotate_180", action="store_false",
-                        help="camera mounted the right way up (default: upside down)")
+    parser.add_argument("--flip", dest="rotate_180", action="store_true",
+                        help="camera is mounted upside down (rotates frames AND "
+                             "intrinsics together)")
     parser.add_argument("--no-filter", dest="filtering", action="store_false",
                         help="disable RealSense depth post-processing")
     parser.add_argument("--ir-gain", type=int, default=None,
@@ -81,7 +82,7 @@ def add_camera_args(parser):
     parser.add_argument("--source", choices=("color", "ir"), default="color",
                         help="image the pose model sees. 'ir' works in the dark "
                              "and needs no depth alignment")
-    parser.set_defaults(rotate_180=True, filtering=True)
+    parser.set_defaults(rotate_180=False, filtering=True)
 
 
 def add_model_args(parser):
@@ -271,6 +272,12 @@ def cmd_run(args, parser, *, sending=True):
             elapsed = time.monotonic() - loop_start
             if elapsed < period:
                 time.sleep(period - elapsed)
+
+            if frames % 150 == 0:
+                warning = cam.health_warning(frames / max(t, 1e-6))
+                if warning and not getattr(cmd_run, "_warned", False):
+                    cmd_run._warned = True
+                    print(f"WARNING: {warning}", flush=True)
 
             if frames % 150 == 0 and not show:
                 rate = 100.0 * sent / max(frames, 1)

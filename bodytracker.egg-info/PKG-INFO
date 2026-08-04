@@ -1,3 +1,31 @@
+Metadata-Version: 2.4
+Name: bodytracker
+Version: 1.0.0
+Summary: Full-body tracking for VRChat from an Intel RealSense depth camera, over OSC
+Author: ViezeVingertjes
+License: MIT
+Project-URL: Homepage, https://github.com/ViezeVingertjes/bodytracker
+Project-URL: Issues, https://github.com/ViezeVingertjes/bodytracker/issues
+Keywords: vrchat,realsense,osc,full-body-tracking,vr,mediapipe
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Multimedia :: Video :: Capture
+Requires-Python: <3.13,>=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: mediapipe<2,>=0.10.9
+Requires-Dist: numpy>=1.24
+Requires-Dist: opencv-contrib-python>=4.8
+Requires-Dist: python-osc>=1.8
+Provides-Extra: camera
+Requires-Dist: pyrealsense2>=2.54; extra == "camera"
+Provides-Extra: dev
+Requires-Dist: pytest>=7; extra == "dev"
+Requires-Dist: ruff>=0.1; extra == "dev"
+Dynamic: license-file
+
 # bodytracker
 
 Full-body tracking for **VRChat** from an **Intel RealSense D415**, sent over OSC.

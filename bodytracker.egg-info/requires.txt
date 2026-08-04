@@ -1,0 +1,11 @@
+mediapipe<2,>=0.10.9
+numpy>=1.24
+opencv-contrib-python>=4.8
+python-osc>=1.8
+
+[camera]
+pyrealsense2>=2.54
+
+[dev]
+pytest>=7
+ruff>=0.1

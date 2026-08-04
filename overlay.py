@@ -14,7 +14,7 @@ import sys
 
 import numpy as np
 
-import solver as S
+import skeleton as S
 
 GREEN = (0, 220, 0)
 AMBER = (0, 170, 255)

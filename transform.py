@@ -33,7 +33,7 @@ import math
 
 import numpy as np
 
-import solver as S
+import skeleton as S
 
 
 def to_unity(point):

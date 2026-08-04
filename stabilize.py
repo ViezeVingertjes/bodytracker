@@ -21,7 +21,7 @@ import collections
 
 import numpy as np
 
-import solver as S
+import skeleton as S
 from transform import OneEuroFilter
 
 # Bones whose length is genuinely fixed on a real body. Ordered proximal ->

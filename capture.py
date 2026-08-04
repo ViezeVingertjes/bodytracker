@@ -12,7 +12,24 @@ rather than a guessed focal length.
 
 
 import numpy as np
-import pyrealsense2 as rs
+
+try:
+    import pyrealsense2 as rs
+except ImportError as _exc:  # pragma: no cover - environment-specific
+    # This is the first error most new users hit, and the bare ImportError says
+    # nothing about why it is not simply a pip install on every platform.
+    raise ImportError(
+        "pyrealsense2 is required for camera capture but is not installed.\n"
+        "\n"
+        "  Windows:  pip install pyrealsense2\n"
+        "  Linux:    there is often no wheel for your Python, and it must be\n"
+        "            built from source. See SETUP.md for the exact build --\n"
+        "            two cmake flags are required or it fails at link time --\n"
+        "            and the udev rule the camera needs to work without root.\n"
+        "\n"
+        "Everything except capture works without it, including `pytest`,\n"
+        "`bodytracker fake` and `bodytracker listen`."
+    ) from _exc
 
 # 848x480 is the D415's native stereo aspect and streams at 90 Hz; Nuitrack's own
 # guidance calls it the optimum size. 30 Hz is what we send to VRChat anyway.
@@ -232,7 +249,16 @@ class DepthCamera:
             self._config.enable_stream(
                 rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps
             )
-        profile = self._pipeline.start(self._config)
+        try:
+            profile = self._pipeline.start(self._config)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"could not start the camera: {exc}\n"
+                "  - is a RealSense connected? (lsusb | grep 8086)\n"
+                "  - is another process using it? only one may open it at a time\n"
+                "  - after repeated open/close cycles the stream can degrade; "
+                "unplug and replug the camera"
+            ) from exc
 
         device = profile.get_device()
         depth_sensor = device.first_depth_sensor()
@@ -381,6 +407,21 @@ class DepthCamera:
     def depth_scale(self):
         """Metres per raw depth unit (0.001 on the D415, but read it, don't assume)."""
         return self._depth_scale
+
+    def health_warning(self, achieved_fps):
+        """Detect the stream degradation that repeated open/close causes.
+
+        Measured: identical code and identical inference time, but the third
+        camera open in one session delivered 0.7 fps instead of 28. It recovers
+        only by replugging. Users will hit this and have no way to know it is a
+        hardware state rather than their configuration, so say so explicitly.
+        """
+        if achieved_fps < self.fps * 0.5:
+            return (f"only {achieved_fps:.1f} fps of an expected {self.fps} -- "
+                    "this is usually the camera stream degrading after repeated "
+                    "open/close cycles. UNPLUG AND REPLUG the camera; it is not "
+                    "a configuration problem.")
+        return None
 
     def read(self, timeout_ms=5000):
         """Return (color_bgr, depth_raw, depth_frame) with depth aligned to colour."""

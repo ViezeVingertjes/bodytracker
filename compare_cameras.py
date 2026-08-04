@@ -32,7 +32,7 @@ import time
 
 import numpy as np
 
-import solver as S
+import skeleton as S
 
 MOVING_THRESHOLD = 0.02  # shoulder-widths/frame; above this the subject is moving
 
@@ -363,8 +363,9 @@ def main(argv=None):
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--only", choices=("uvc", "realsense"))
     ap.add_argument("--no-preview", dest="preview", action="store_false")
-    ap.add_argument("--upright", dest="rotate_180", action="store_false")
-    ap.set_defaults(rotate_180=True, preview=True)
+    ap.add_argument("--flip", dest="rotate_180", action="store_true",
+                    help="camera is mounted upside down")
+    ap.set_defaults(rotate_180=False, preview=True)
     args = ap.parse_args(argv)
 
     runners = [("global-shutter webcam", run_uvc), ("D415 RGB", run_realsense)]
