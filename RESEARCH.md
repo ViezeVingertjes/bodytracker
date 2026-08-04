@@ -51,7 +51,8 @@ From VRChat's OSC tracker spec:
 | Port | **9000** on the Quest (VRChat receives on 9000, sends on 9001) |
 | Roles | hip, chest, 2x feet, 2x knees, 2x elbows (upper arms) — 8 max |
 
-**Partly verified. All 8 indices work; the role mapping is still open.**
+**Resolved.** All 8 indices work, and the index→role mapping follows SlimeVR's
+convention — see below.
 
 *Tested 2026-08-04 against desktop VRChat on this machine (Proton, `--no-vr`).* Sent
 indices 1–4, then 5–8, as a compact chest-height row. **All four appeared in OSC Debug in
@@ -64,8 +65,24 @@ fixed index→role mapping, or roles assigned during FBT calibration from where 
 the balls (the way SteamVR trackers work). **VRChat would accept and draw all 8 indices
 under either rule**, so the acceptance test cannot discriminate between them.
 
-Role assignment only manifests during calibration, and desktop mode cannot calibrate
-(see §6). **This needs the Quest**, at step 4 of §8. Until then, do not assume a numbering.
+**Answered by two sources the prose does not make obvious:**
+
+1. **SlimeVR's implementation is the de-facto standard.** `VRCOSCHandler.kt`,
+   `getVRCOSCTrackersId()`: hip=1, left_foot=2, right_foot=3, left_upper_leg=4,
+   right_upper_leg=5, upper_chest=6, left_upper_arm=7, right_upper_arm=8 — with the
+   comment *"Don't change as third party applications may rely on this for mapping
+   trackers to body parts."* Note this is NOT the order VRChat's prose lists roles in:
+   reading that literally gives chest=2 and feet=3,4, which is wrong.
+
+2. **VRChat itself very likely ignores the index.** Its docs say the system "should
+   function similarly to our existing implementation for SteamVR trackers", and
+   *Auto-center OSC Trackers* "will find the two lowest trackers on the y axis" and
+   "guess a forward direction based on assuming the two lowest trackers represent left
+   and right feet". Roles are inferred from **position at calibration**, exactly like
+   SteamVR pucks — which is why any index numbering appeared to work in testing.
+
+So the numbering matters for interoperability with other OSC tooling, not for VRChat's
+own IK. We follow SlimeVR.
 
 Testing note for whoever repeats this: probe **4 indices at a time, not 8**, and keep them
 at chest height in a ~±0.4 m row with alternating bob phase. A first attempt used a

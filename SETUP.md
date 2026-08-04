@@ -181,8 +181,12 @@ Results:
 - ❌ **Avatar does not move** — expected. OSC trackers feed the *calibrated* FBT IK; without
   calibration VRChat knows a tracker exists but not which body part it drives. True even
   with a headset.
-- ❌ **Index→role mapping still unresolved.** All 8 indices render under either possible
-  rule, so this test cannot discriminate. Needs calibration on the Quest.
+- ✅ **Index→role mapping resolved** — by reading SlimeVR's source rather than testing.
+  hip=1, feet=2/3, knees=4/5, chest=6, elbows=7/8. VRChat's prose order (hip, chest,
+  feet, knees, elbows) is NOT the index order, and taking it literally gave chest=2 and
+  feet=3/4, which is wrong. VRChat itself infers roles from position at calibration
+  (its Auto-center finds "the two lowest trackers" and calls them feet), so the
+  numbering matters for other OSC tooling, not for VRChat's IK.
 
 **How to probe indices without misreading the result:** 4 at a time, chest height
 (y≈1.10), within a ±0.4 m row, alternating bob phase so neighbours move in opposition.

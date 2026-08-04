@@ -163,18 +163,35 @@ class OneEuroFilter:
 
 # Which VRChat tracker index each role uses.
 #
-# WARNING: this numbering is a PRESUMPTION, following the order VRChat's spec
-# lists the roles in ("hip, chest, 2x feet, 2x knees, 2x elbows"). The spec never
-# states that index 1 is the hip, and testing on desktop VRChat could not settle
-# it -- all 8 indices are accepted either way. It needs confirming during a real
-# FBT calibration on the Quest. See RESEARCH.md section 2.
+# This follows SlimeVR's mapping, which is the de-facto standard. From
+# SlimeVR-Server, osc/VRCOSCHandler.kt, getVRCOSCTrackersId():
+#
+#     HIP -> 1;  LEFT_FOOT -> 2;  RIGHT_FOOT -> 3
+#     LEFT_UPPER_LEG -> 4;  RIGHT_UPPER_LEG -> 5
+#     UPPER_CHEST -> 6;  LEFT_UPPER_ARM -> 7;  RIGHT_UPPER_ARM -> 8
+#
+# carrying the comment: "Don't change as third party applications may rely on
+# this for mapping trackers to body parts."
+#
+# VRChat's own docs never state an index->role mapping -- they only list which
+# roles exist, in the order "hip, chest, 2x feet, 2x knees, 2x elbows". Reading
+# that order literally gives chest=2 and feet=3,4, which is what this used to do
+# and is WRONG relative to every other tool in the ecosystem.
+#
+# VRChat itself most likely does not care about the index at all: its docs say
+# the system "should function similarly to our existing implementation for
+# SteamVR trackers", and Auto-center OSC Trackers works by finding "the two
+# lowest trackers on the y axis" and assuming those are the feet -- i.e. roles
+# are inferred from POSITION at calibration, not from the address number. But
+# matching the ecosystem convention costs nothing and is what other OSC
+# receivers, overlays and debugging tools expect to see.
 TRACKER_ROLES = {
     "hip": 1,
-    "chest": 2,
-    "left_foot": 3,
-    "right_foot": 4,
-    "left_knee": 5,
-    "right_knee": 6,
+    "left_foot": 2,
+    "right_foot": 3,
+    "left_knee": 4,
+    "right_knee": 5,
+    "chest": 6,
     "left_elbow": 7,
     "right_elbow": 8,
 }
@@ -186,11 +203,11 @@ TRACKER_ROLES = {
 #
 #     role          idx  measured  jitter
 #     hip             1      100%   4.2mm   core
-#     chest           2      100%   3.1mm   core -- our STEADIEST tracker
-#     left_foot       3       99%   7.9mm   standard FBT
-#     right_foot      4      100%   4.8mm   standard FBT
-#     left_knee       5      100%   6.7mm   good, but IK usually solves knees fine
-#     right_knee      6      100%   5.6mm   "
+#     left_foot       2       99%   7.9mm   standard FBT
+#     right_foot      3      100%   4.8mm   standard FBT
+#     left_knee       4      100%   6.7mm   good, but IK usually solves knees fine
+#     right_knee      5      100%   5.6mm   "
+#     chest           6      100%   3.1mm   core -- our STEADIEST tracker
 #     left_elbow      7      100%   5.5mm   shares the arm with your controller
 #     right_elbow     8       94%   6.7mm   "
 #

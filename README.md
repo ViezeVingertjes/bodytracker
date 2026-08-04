@@ -116,13 +116,17 @@ roles were measured rather than guessed, over 446 frames of real movement:
 | role | idx | measured | jitter | |
 |---|---|---|---|---|
 | hip | 1 | 100% | 4.2 mm | core |
-| chest | 2 | 100% | **3.1 mm** | core — the steadiest point we produce |
-| left_foot | 3 | 99% | 7.9 mm | standard FBT |
-| right_foot | 4 | 100% | 4.8 mm | standard FBT |
-| left_knee | 5 | 100% | 6.7 mm | optional |
-| right_knee | 6 | 100% | 5.6 mm | optional |
+| left_foot | 2 | 99% | 7.9 mm | standard FBT |
+| right_foot | 3 | 100% | 4.8 mm | standard FBT |
+| left_knee | 4 | 100% | 6.7 mm | optional |
+| right_knee | 5 | 100% | 5.6 mm | optional |
+| chest | 6 | 100% | **3.1 mm** | core — the steadiest point we produce |
 | left_elbow | 7 | 100% | 5.5 mm | not recommended |
 | right_elbow | 8 | 94% | 6.7 mm | not recommended |
+
+Indices follow **SlimeVR's mapping**, which is the de-facto standard
+(`VRCOSCHandler.kt`, carrying the comment *"Don't change as third party
+applications may rely on this for mapping trackers to body parts"*).
 
 - **Chest** is in by default on the numbers — it is our most stable tracker, and gives
   VRChat torso lean and twist that hip alone cannot.
@@ -153,10 +157,14 @@ while being wrong, so that report is the only way to notice.
 
 **Not verified, and only the Quest can settle it:**
 
-- **Index → role mapping.** VRChat's spec lists *which roles exist* but never says
-  index 1 is the hip. Desktop VRChat accepts all 8 indices under either rule, so the
-  test cannot discriminate. If calibration puts trackers on the wrong body parts,
-  the mapping in `transform.TRACKER_ROLES` is what to change.
+- **Index → role mapping — now resolved by convention, not by guessing.** VRChat's
+  own docs never state one; they only list which roles exist. We follow SlimeVR's
+  mapping (see above). VRChat itself probably ignores the index entirely: its docs say
+  the system "should function similarly to our existing implementation for SteamVR
+  trackers", and *Auto-center OSC Trackers* works by finding "the two lowest trackers
+  on the y axis" and assuming they are feet — i.e. roles are inferred from **position
+  at calibration**, not from the address number. Matching the convention costs nothing
+  and is what other OSC tools expect.
 - **Rotations.** The maths is proven correct in isolation and the values are stable
   on real recordings, but nothing has confirmed VRChat interprets them as intended.
   `--no-rotations` falls back to identity if they look wrong.
