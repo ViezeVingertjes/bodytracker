@@ -28,7 +28,7 @@ except ImportError as _exc:  # pragma: no cover - environment-specific
         "            and the udev rule the camera needs to work without root.\n"
         "\n"
         "Everything except capture works without it, including `pytest`,\n"
-        "`bodytracker fake` and `bodytracker listen`."
+        "`bodytracker fetch`, `bodytracker fake` and `bodytracker listen`."
     ) from _exc
 
 # 848x480 is the D415's native stereo aspect and streams at 90 Hz; Nuitrack's own
@@ -408,16 +408,21 @@ class DepthCamera:
         """Metres per raw depth unit (0.001 on the D415, but read it, don't assume)."""
         return self._depth_scale
 
-    def health_warning(self, achieved_fps):
+    def health_warning(self, delivery_fps):
         """Detect the stream degradation that repeated open/close causes.
 
         Measured: identical code and identical inference time, but the third
         camera open in one session delivered 0.7 fps instead of 28. It recovers
         only by replugging. Users will hit this and have no way to know it is a
         hardware state rather than their configuration, so say so explicitly.
+
+        `delivery_fps` must be how fast the CAMERA delivers, not how fast the
+        caller's pipeline runs. Those differ whenever inference is the
+        bottleneck, and passing the latter reports a hardware fault for what is
+        really a heavier model or a slower CPU.
         """
-        if achieved_fps < self.fps * 0.5:
-            return (f"only {achieved_fps:.1f} fps of an expected {self.fps} -- "
+        if delivery_fps < self.fps * 0.5:
+            return (f"only {delivery_fps:.1f} fps of an expected {self.fps} -- "
                     "this is usually the camera stream degrading after repeated "
                     "open/close cycles. UNPLUG AND REPLUG the camera; it is not "
                     "a configuration problem.")

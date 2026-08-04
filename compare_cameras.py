@@ -144,6 +144,10 @@ def collect(get_frame, seconds, label, preview=True):
     -- the first run of this tool measured a spurious 93px "body" and reported a
     40x regression that was pure noise.
     """
+    # solver first: it sets the glog/absl environment variables that MediaPipe
+    # reads at import time, and it owns where the .task files live. `S` is
+    # skeleton, which holds only the landmark constants.
+    from solver import DEFAULT_MODEL, model_path
     from mediapipe import Image, ImageFormat
     from mediapipe.tasks.python import BaseOptions
     from mediapipe.tasks.python.vision import (
@@ -153,7 +157,7 @@ def collect(get_frame, seconds, label, preview=True):
     )
 
     landmarker = PoseLandmarker.create_from_options(PoseLandmarkerOptions(
-        base_options=BaseOptions(model_asset_path=S.model_path(S.DEFAULT_MODEL)),
+        base_options=BaseOptions(model_asset_path=model_path(DEFAULT_MODEL)),
         running_mode=RunningMode.VIDEO, num_poses=1))
 
     tracks = collections.defaultdict(list)

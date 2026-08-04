@@ -59,3 +59,7 @@ select = ["E", "F", "W", "B", "SIM", "UP", "C4", "RET", "ARG"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The modules under test are at the repo root, and `tests/` is not a package.
+# Without this, the `pytest` console script collects nothing importable -- only
+# `python -m pytest` happens to work, because that form alone adds the CWD.
+pythonpath = ["."]

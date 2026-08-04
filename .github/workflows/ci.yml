@@ -17,12 +17,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        # No pyrealsense2: it needs a source build on some platforms and the
-        # tests deliberately require no camera and no hardware.
+        # Install the project itself, not a copy of its dependency list: a
+        # hand-written list here drifts from [project.dependencies] silently.
+        # The `camera` extra is deliberately left out -- pyrealsense2 needs a
+        # source build on some platforms, and the tests require no hardware.
         run: |
           python -m pip install --upgrade pip
-          pip install "mediapipe>=0.10.9,<2" "numpy>=1.24" "python-osc>=1.8" \
-                      "opencv-contrib-python>=4.8" pytest ruff
+          pip install -e ".[dev]"
       - name: Lint
         run: ruff check .
       - name: Test

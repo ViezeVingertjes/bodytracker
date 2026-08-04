@@ -94,6 +94,10 @@ If your camera is mounted **upside down**, add `--flip`.
 | `diagnose` | why joints get dropped, and whether depth or landmarks dominate the error |
 | `fetch` | download the pose models |
 
+`fetch` writes to `models/` in a checkout, or to your user data directory if the
+package was installed non-editably. It prints the path either way; set
+`BODYTRACKER_MODEL_DIR` to override it.
+
 ## How well does it work
 
 Measured on a real body, 542 frames:

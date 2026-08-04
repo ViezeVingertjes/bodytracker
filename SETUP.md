@@ -141,8 +141,8 @@ aligning depth→colour costs essentially no usable area here.
 
 ## Camera is mounted upside down
 
-The D415 is physically inverted, so `DepthCamera(rotate_180=True)` is the normal mode
-here (the app defaults to it; pass `--upright` if the camera is ever remounted).
+If the D415 is physically inverted, pass `--flip`, which is `DepthCamera(rotate_180=True)`.
+The app defaults to upright, so this is opt-in per mount.
 
 This rotates the frames **and** the intrinsics together. Rotating only the image is the
 trap: MediaPipe would detect the pose happily, the preview would look perfect, and

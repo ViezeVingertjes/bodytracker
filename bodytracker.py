@@ -33,7 +33,6 @@ import time
 import numpy as np
 
 import overlay
-from capture import DepthCamera
 from osc_out import VRCHAT_OSC_PORT, TrackerSender
 from solver import (DEFAULT_MODEL, MODEL_DIR, MODELS, NEEDED, PoseSolver,
                     Skeleton, model_path)
@@ -113,6 +112,13 @@ def make_stabilizer(args):
 
 
 def open_camera(args):
+    # Imported here, not at module scope: capture.py raises a deliberate
+    # ImportError when pyrealsense2 is missing, and pyrealsense2 is an optional
+    # extra. At module scope that error fires on `import bodytracker`, taking
+    # down `fake`, `listen` and `fetch` -- the subcommands that exist precisely
+    # so you can make progress before the camera stack builds.
+    from capture import DepthCamera
+
     return DepthCamera(args.width, args.height,
                        rotate_180=args.rotate_180, filtering=args.filtering,
                        source=getattr(args, "source", "color"),
@@ -167,10 +173,23 @@ def cmd_run(args, parser, *, sending=True):
         if cam.sensor_warnings:
             print(f"camera warnings: {cam.sensor_warnings}", flush=True)
         t0 = time.monotonic()
+        # Tracked separately from `fps`, which is the end-to-end pipeline rate
+        # and so falls with a heavier model or a slower CPU -- feeding that to
+        # health_warning() reports a hardware fault for what is a model choice.
+        # `cam_fps` is how fast the camera itself delivers: when the pipeline is
+        # the bottleneck, frames are already queued and read() returns at once,
+        # so this stays high. Seeded at nominal so it cannot fire before it has
+        # converged, and an EMA rather than a mean since t0 so that degradation
+        # part-way into a session actually moves it.
+        cam_fps = float(cam.fps)
 
         while True:
             loop_start = time.monotonic()
             frame = cam.read()
+            # read() blocks only when the camera has nothing queued, so its
+            # duration measures delivery, not our own throughput. Updated before
+            # the None check: a dropped frame still cost us the wait.
+            cam_fps = 0.9 * cam_fps + 0.1 / max(time.monotonic() - loop_start, 1e-6)
             if frame is None:
                 continue
             color, depth_raw, _ = frame
@@ -274,7 +293,7 @@ def cmd_run(args, parser, *, sending=True):
                 time.sleep(period - elapsed)
 
             if frames % 150 == 0:
-                warning = cam.health_warning(frames / max(t, 1e-6))
+                warning = cam.health_warning(cam_fps)
                 if warning and not getattr(cmd_run, "_warned", False):
                     cmd_run._warned = True
                     print(f"WARNING: {warning}", flush=True)
@@ -619,6 +638,10 @@ def cmd_fetch(args, _parser):
     import urllib.request
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    # Say where: this is the repo's models/ from a checkout, but the user data
+    # directory from a non-editable install, and a silent 45 MB download to an
+    # unstated path is not something anyone should have to go looking for.
+    print(f"into {MODEL_DIR}")
     wanted = MODELS if args.all else [args.model]
     for variant in wanted:
         target = pathlib.Path(model_path(variant))

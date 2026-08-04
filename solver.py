@@ -62,10 +62,47 @@ MODELS = ("lite", "full", "heavy")
 DEFAULT_MODEL = "full"
 
 
-# Anchored to this file, not the working directory, so the app runs from
-# anywhere -- and so Windows shortcuts and IDEs, which rarely set the CWD to the
-# project root, do not fail with a confusing "model not found".
-MODEL_DIR = pathlib.Path(__file__).resolve().parent / "models"
+def _user_data_dir():
+    """Per-user writable data directory, by platform convention."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
+    elif sys.platform == "darwin":
+        base = "~/Library/Application Support"
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or "~/.local/share"
+    return pathlib.Path(base).expanduser() / "bodytracker"
+
+
+def _model_dir():
+    """Where the ~45 MB of .task files live.
+
+    Anchored to this file, not the working directory, so the app runs from
+    anywhere -- and so Windows shortcuts and IDEs, which rarely set the CWD to
+    the project root, do not fail with a confusing "model not found".
+
+    The exception is a non-editable install: the flat py-modules layout puts
+    these modules directly in site-packages, which is the wrong home for
+    downloaded data. It can be read-only, and it is wiped on upgrade. There,
+    fall back to the user data directory.
+
+    Tested by looking for the checkout itself rather than by enumerating install
+    schemes. `sysconfig`'s purelib is the *default* scheme, so matching against
+    it misses `pip install --user` and Debian's split layout -- the read-only
+    cases this exists for. An adjacent pyproject.toml is positive evidence of a
+    source tree, and it is true for editable installs too, where __file__ still
+    resolves back into the repo.
+    """
+    override = os.environ.get("BODYTRACKER_MODEL_DIR")
+    if override:
+        return pathlib.Path(override).expanduser().resolve()
+
+    here = pathlib.Path(__file__).resolve().parent
+    if (here / "pyproject.toml").exists():
+        return here / "models"
+    return _user_data_dir() / "models"
+
+
+MODEL_DIR = _model_dir()
 
 
 def model_path(name):
@@ -219,7 +256,8 @@ class PoseSolver:
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"pose model not found at {model_path!r}.\n"
-                "Fetch the models with:  python bodytracker.py fetch"
+                "Fetch the models with:  python bodytracker.py fetch\n"
+                "Set BODYTRACKER_MODEL_DIR to keep them somewhere else."
             )
         with _captured_stderr():
             self._landmarker = PoseLandmarker.create_from_options(options)
