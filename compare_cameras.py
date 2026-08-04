@@ -157,6 +157,7 @@ def collect(get_frame, seconds, label, preview=True):
         running_mode=RunningMode.VIDEO, num_poses=1))
 
     tracks = collections.defaultdict(list)
+    world = collections.defaultdict(list)
     shoulders = []
     seen = detected = 0
     timestamp = 0
@@ -221,6 +222,14 @@ def collect(get_frame, seconds, label, preview=True):
             for idx in S.NEEDED:
                 lm = marks[idx]
                 tracks[idx].append((lm.x * width, lm.y * height))
+            # MediaPipe's metric 3D estimate -- inferred from limb proportions,
+            # NOT measured. This is what replaces depth when there is no depth
+            # sensor, so its self-consistency is the whole question.
+            if result.pose_world_landmarks:
+                wl = result.pose_world_landmarks[0]
+                for idx in S.NEEDED:
+                    world[idx].append((wl[idx].x, wl[idx].y, wl[idx].z))
+
             left, right = marks[S.L_SHOULDER], marks[S.R_SHOULDER]
             shoulders.append(float(np.hypot((left.x - right.x) * width,
                                             (left.y - right.y) * height)))
@@ -228,10 +237,43 @@ def collect(get_frame, seconds, label, preview=True):
         landmarker.close()
         if cv2 is not None:
             cv2.destroyAllWindows()
-    return tracks, shoulders, seen, detected
+    return tracks, world, shoulders, seen, detected
 
 
 MIN_SHOULDER_PX = 140   # below this the "subject" is too small to be a real body
+
+
+def world_metrics(world):
+    """3D limb-length spread from MediaPipe's world landmarks, in millimetres.
+
+    Directly comparable to the D415 figures, because both are 3D limb lengths in
+    metres -- unlike the 2D projected lengths, which change as a limb rotates.
+
+    A limb cannot change length. Whatever spread appears here is error in the
+    inferred depth, which is the axis a depth camera was measuring.
+    """
+    bones = [(S.L_SHOULDER, S.L_ELBOW), (S.L_ELBOW, S.L_WRIST),
+             (S.R_SHOULDER, S.R_ELBOW), (S.R_ELBOW, S.R_WRIST),
+             (S.L_HIP, S.L_KNEE), (S.R_HIP, S.R_KNEE),
+             (S.L_KNEE, S.L_ANKLE), (S.R_KNEE, S.R_ANKLE),
+             (S.L_SHOULDER, S.R_SHOULDER), (S.L_HIP, S.R_HIP)]
+    spreads, jitters = [], []
+    for a, b in bones:
+        if len(world[a]) < 30 or len(world[b]) < 30:
+            continue
+        n = min(len(world[a]), len(world[b]))
+        lengths = np.linalg.norm(
+            np.array(world[a][:n]) - np.array(world[b][:n]), axis=1)
+        spreads.append((np.percentile(lengths, 84) - np.percentile(lengths, 16)) * 1000)
+    for idx in S.NEEDED:
+        if len(world[idx]) < 30:
+            continue
+        arr = np.array(world[idx])
+        jitters.append(np.median(np.linalg.norm(np.diff(arr, axis=0), axis=1)) * 1000)
+    if not spreads:
+        return None
+    return {"bone_spread_mm": float(np.median(spreads)),
+            "joint_jitter_mm": float(np.median(jitters)) if jitters else float("nan")}
 
 
 def analyse(tracks, shoulders, seen, detected):
@@ -330,10 +372,12 @@ def main(argv=None):
         runners = [r for r in runners
                    if (args.only == "uvc") == (r[0] == "global-shutter webcam")]
 
-    results = {}
+    results, worlds = {}, {}
     for name, runner in runners:
         try:
-            results[name] = analyse(*runner(args))
+            tracks, world, shoulders, seen, detected = runner(args)
+            results[name] = analyse(tracks, shoulders, seen, detected)
+            worlds[name] = world_metrics(world)
         except Exception as exc:  # noqa: BLE001
             print(f"  {name}: unavailable ({exc})")
 
@@ -378,6 +422,21 @@ def main(argv=None):
         print("Remember what the D415 also provided and this camera cannot: "
               "MEASURED depth (4.0mm),")
         print("30fps in this lighting (vs ~15), and its own IR illumination.")
+
+    print()
+    print("=== 3D from MediaPipe world landmarks (INFERRED depth, not measured) ===")
+    print(f"{'source':<30}{'bone spread':>14}{'joint jitter':>15}")
+    print("-" * 60)
+    for name, m in worlds.items():
+        if m:
+            print(f"{name:<30}{m['bone_spread_mm']:12.1f}mm"
+                  f"{m['joint_jitter_mm']:13.1f}mm")
+    print(f"{'D415, measured depth (raw)':<30}{84.9:12.1f}mm{10.2:13.1f}mm")
+    print(f"{'D415, measured + stabilised':<30}{26.8:12.1f}mm{4.7:13.1f}mm")
+    print()
+    print("A limb cannot change length, so all of the spread is depth error.")
+    print("Lower than the D415 rows means the inferred Z is good enough to "
+          "replace measured depth.")
     return 0
 
 
