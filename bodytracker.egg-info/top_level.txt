@@ -1,8 +1,0 @@
-bodytracker
-capture
-osc_out
-overlay
-skeleton
-solver
-stabilize
-transform

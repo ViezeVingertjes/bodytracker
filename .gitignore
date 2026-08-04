@@ -9,3 +9,10 @@ models/*.task
 
 # Recordings from `bodytracker.py measure --save`
 *.npz
+
+# Packaging build artefacts
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
