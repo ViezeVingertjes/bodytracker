@@ -329,7 +329,7 @@ class DepthCamera:
         try_set(rs.option.emitter_enabled, emitter, "emitter_enabled")
 
     def _try_visual_preset(self):
-        """Attempt HIGH_DENSITY once. Returns True when it has been applied.
+        """Attempt MEDIUM_DENSITY once. Returns True when it has been applied.
 
         MEDIUM_DENSITY, chosen by measurement on a real body rather than by
         reasoning. Measured over 5 s per preset with a person in frame:

@@ -108,10 +108,19 @@ def rotvec_to_matrix(v):
 def matrix_to_rotvec(m):
     """Rotation matrix -> rotation vector. Inverse of rotvec_to_matrix."""
     m = np.asarray(m, dtype=float)
-    theta = math.acos(float(np.clip((np.trace(m) - 1.0) / 2.0, -1.0, 1.0)))
-    if theta < 1e-9:
+    axis = np.array([m[2][1] - m[1][2],
+                     m[0][2] - m[2][0],
+                     m[1][0] - m[0][1]])
+    # atan2 of (2 sin θ, 2 cos θ) rather than acos(cos θ). acos is ill
+    # conditioned at BOTH ends -- its slope is infinite there, so the relative
+    # error in θ blows up as 1-cos θ falls below float resolution. That cost
+    # 0.14 deg near pi and silently returned exactly zero for any rotation
+    # below ~1.5e-8 rad. atan2 stays accurate across the whole range.
+    theta = math.atan2(float(np.linalg.norm(axis)) / 2.0,
+                       (float(np.trace(m)) - 1.0) / 2.0)
+    if theta < 1e-12:
         return np.zeros(3)
-    if theta > math.pi - 1e-6:
+    if theta > math.pi - 1e-5:
         # At pi the antisymmetric part is zero, so the generic formula below
         # divides by sin(theta) ~ 0. Near pi, (R + I)/2 = k k^T, so read the
         # axis off its diagonal -- via the LARGEST entry, because a small one
@@ -128,9 +137,6 @@ def matrix_to_rotvec(m):
         if n < 1e-9:
             return np.zeros(3)
         return k / n * theta
-    axis = np.array([m[2][1] - m[1][2],
-                     m[0][2] - m[2][0],
-                     m[1][0] - m[0][1]])
     return axis * (theta / (2.0 * math.sin(theta)))
 
 
@@ -268,6 +274,11 @@ TRACKER_ROLES = {
 DEFAULT_ROLES = ("hip", "chest", "left_foot", "right_foot")
 
 
+# Shortest ankle->toe vector we will take a foot direction from, in metres.
+# Well under any real foot, so it rejects only a collapsed measurement.
+MIN_FOOT_LENGTH = 0.06
+
+
 def _foot(skeleton, ankle, toe):
     """Foot position, preferring the ankle but accepting the toe.
 
@@ -363,7 +374,13 @@ def build_rotations(skeleton, roles):
         if skeleton.has(ankle, toe):
             forward = u(skeleton.get(toe)) - u(skeleton.get(ankle))
             n = float(np.linalg.norm(forward))
-            if n > 1e-6:
+            # A real foot is 15-25 cm. Guarding only against zero length let a
+            # collapsed toe vector -- both landmarks on the same depth patch --
+            # produce an arbitrary but perfectly finite basis, which then got
+            # smoothed and sent as though it were a measurement. Below this the
+            # direction carries no information, so emit no rotation at all and
+            # let the latch hold the last good one.
+            if n > MIN_FOOT_LENGTH:
                 forward = forward / n
                 right = np.cross(np.array([0.0, 1.0, 0.0]), forward)
                 if float(np.linalg.norm(right)) > 1e-6:
@@ -412,17 +429,39 @@ class RotationSmoother:
         self.max_rejects = max_rejects
         self._matrices = {}
         self._rejects = {}
+        self._catching_up = set()
 
     @staticmethod
     def _orthonormalize(m):
-        # Blending two rotation matrices leaves a near-rotation; SVD projects it
-        # back onto the closest true rotation, which keeps scale and shear out.
+        # Repeated multiplication of rotations accumulates a little numerical
+        # drift; SVD projects back onto the closest true rotation, keeping
+        # scale and shear out.
         u, _, vt = np.linalg.svd(m)
         r = u @ vt
         if np.linalg.det(r) < 0:  # reflection, not rotation
             u[:, -1] *= -1
             r = u @ vt
         return r
+
+    def _step_toward(self, previous, target):
+        """Rotate `previous` a fraction alpha of the way toward `target`.
+
+        A geodesic step, not a matrix lerp. The lerp this replaced was exactly
+        on the slerp geodesic too -- but only because it ran solely on the
+        small-angle branch. It could not be reused on the accept path below,
+        where the pair can be ~180 deg apart and `(1-a)P + aM` collapses toward
+        singular, so the accept path assigned the target matrix RAW.
+
+        That snap is what made a genuine fast turn misbehave: the whole
+        held-back rotation arrived in one frame, RotationPredictor read it as a
+        huge angular rate, clamped it, and shipped an orientation ~13 deg past a
+        target that had just become correct -- rubber-banding back over a
+        quarter second. Stepping along the geodesic is well-conditioned at every
+        angle, so both paths can share it and a real turn is approached at a
+        steady rate the predictor can actually track.
+        """
+        delta = matrix_to_rotvec(target @ previous.T)
+        return self._orthonormalize(rotvec_to_matrix(delta * self.alpha) @ previous)
 
     def __call__(self, rotations):
         out = {}
@@ -433,7 +472,11 @@ class RotationSmoother:
                 # Angle between the two rotations, from the trace of prevT*m.
                 cos_angle = (np.trace(previous.T @ m) - 1.0) / 2.0
                 angle = math.degrees(math.acos(float(np.clip(cos_angle, -1, 1))))
-                if angle > self.max_step_deg:
+                if angle <= self.max_step_deg:
+                    # Converged, or never diverged: ordinary smoothing.
+                    self._rejects[key] = 0
+                    self._catching_up.discard(key)
+                elif key not in self._catching_up:
                     rejects = self._rejects.get(key, 0) + 1
                     if rejects <= self.max_rejects:
                         # A one-frame flip -- almost always the short ankle->toe
@@ -442,13 +485,15 @@ class RotationSmoother:
                         out[key] = matrix_to_unity_euler(previous)
                         continue
                     # Persisted across several frames, so it is a real rotation,
-                    # not a glitch. Accept it and resume smoothing.
+                    # not a glitch. Latch that decision: a smoothed step only
+                    # closes a fraction of the gap, so without the latch the
+                    # remaining gap is still over threshold and the next frame
+                    # rejects again -- reject three, creep one, reject three,
+                    # which never catches up with a genuine turn.
                     self._rejects[key] = 0
-                else:
-                    self._rejects[key] = 0
-                    m = self._orthonormalize(
-                        previous * (1 - self.alpha) + m * self.alpha
-                    )
+                    self._catching_up.add(key)
+                # Still catching up: keep stepping, do not re-reject.
+                m = self._step_toward(previous, m)
             self._matrices[key] = m
             out[key] = matrix_to_unity_euler(m)
         return out
@@ -456,6 +501,26 @@ class RotationSmoother:
 
 def matrix_to_unity_euler(m):
     return basis_to_unity_euler(m[:, 0], m[:, 1], m[:, 2])
+
+
+def prediction_horizon(age, lead, max_horizon, fade):
+    """Seconds to extrapolate over, faded out once a measurement goes stale.
+
+    Clipping the horizon is not enough on its own. A tracker that stops
+    updating keeps `age` growing, so a clipped horizon pins it at max_horizon
+    FOREVER: the pose freezes at a deliberately-wrong offset -- up to 0.48 m of
+    position or 86 deg of rotation -- and never relaxes. The clip exists to stop
+    the linear model being trusted beyond a few frames, and past that point the
+    honest answer is the last real measurement, not a permanent extrapolation
+    away from it. So the horizon decays back to zero instead of sticking.
+
+    Trackers that ARE updating are unaffected: at 30fps `age` is ~0.033s, far
+    inside max_horizon, so the fade never engages.
+    """
+    horizon = min(max(age + lead, 0.0), max_horizon)
+    if age > max_horizon:
+        horizon *= max(0.0, 1.0 - (age - max_horizon) / fade)
+    return horizon
 
 
 class RotationPredictor:
@@ -477,8 +542,10 @@ class RotationPredictor:
     amplify that noise straight into the output.
     """
 
-    def __init__(self, velocity_alpha=0.35, max_rate_deg=720.0, max_horizon=0.12):
+    def __init__(self, velocity_alpha=0.35, max_rate_deg=720.0, max_horizon=0.12,
+                 stale_fade=0.25):
         self.velocity_alpha = velocity_alpha
+        self.stale_fade = stale_fade
         # Ceiling on extrapolated angular speed, mirroring TrackerPredictor's
         # max_speed. Two full turns a second is far beyond real body motion but
         # well below the spike a single bad frame produces.
@@ -512,8 +579,8 @@ class RotationPredictor:
             if omega is None:
                 out[key] = matrix_to_unity_euler(m)
                 continue
-            horizon = float(np.clip((t - self._time[key]) + lead,
-                                    0.0, self.max_horizon))
+            horizon = prediction_horizon(t - self._time[key], lead,
+                                         self.max_horizon, self.stale_fade)
             out[key] = matrix_to_unity_euler(rotvec_to_matrix(omega * horizon) @ m)
         return out
 
@@ -551,8 +618,11 @@ class TrackerPredictor:
     or three frames at a time; predicting at each send smooths that.
     """
 
-    def __init__(self, velocity_alpha=0.35, max_speed=4.0):
+    def __init__(self, velocity_alpha=0.35, max_speed=4.0, max_horizon=0.12,
+                 stale_fade=0.25):
         self.velocity_alpha = velocity_alpha
+        self.max_horizon = max_horizon
+        self.stale_fade = stale_fade
         # Hard ceiling on extrapolated speed. A bad velocity estimate would
         # otherwise throw a tracker metres away for one frame.
         self.max_speed = max_speed
@@ -583,10 +653,11 @@ class TrackerPredictor:
             if velocity is None:
                 out[key] = position
                 continue
-            horizon = (t - self._time[key]) + lead
             # Never predict further ahead than a few frames; beyond that the
-            # linear model stops being a reasonable description of a limb.
-            horizon = float(np.clip(horizon, 0.0, 0.12))
+            # linear model stops being a reasonable description of a limb, and
+            # the extrapolation fades back out rather than freezing there.
+            horizon = prediction_horizon(t - self._time[key], lead,
+                                         self.max_horizon, self.stale_fade)
             out[key] = position + velocity * horizon
         return out
 

@@ -96,8 +96,29 @@ class TestRotationSmoother:
         for _ in range(3):
             smoother({3: np.array([0.0, 0.0, 0.0])})
         outputs = [smoother({3: np.array([0.0, 90.0, 0.0])})[3][1]
-                   for _ in range(10)]
-        assert max(outputs) > 80.0, "a real sustained turn must be accepted"
+                   for _ in range(20)]
+        assert max(outputs) > 85.0, "a real sustained turn must be accepted"
+        # Monotone: it approaches the truth rather than oscillating toward it.
+        assert all(b >= a - 1e-9 for a, b in zip(outputs, outputs[1:], strict=False))
+
+    def test_accepted_turn_does_not_overshoot_downstream(self):
+        """The smoother must hand the predictor a rate it can actually track.
+
+        The accept path used to assign the measured matrix RAW, delivering a
+        whole held-back turn in one frame. RotationPredictor read that as a
+        ~2700 deg/s rate, clamped it, and shipped an orientation ~13 deg PAST a
+        target that had just become correct -- rubber-banding back over a
+        quarter second. Smoothing along the geodesic instead keeps the rate
+        trackable, so the turn is approached rather than overshot.
+        """
+        smoother, predictor = RotationSmoother(), RotationPredictor()
+        dt, lead, worst = 1 / 30, 0.05, 0.0
+        for i in range(20):
+            target = 0.0 if i < 3 else 90.0
+            predictor.update(smoother({3: np.array([0.0, target, 0.0])}), i * dt)
+            sent = predictor.at(i * dt, lead)[3][1]
+            worst = max(worst, sent - target)
+        assert worst < 2.0, f"overshot the real orientation by {worst:.1f} deg"
 
     def test_small_motion_passes_through(self):
         smoother = RotationSmoother()

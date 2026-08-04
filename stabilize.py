@@ -12,9 +12,18 @@ that survive it, which are structural rather than statistical:
      and enforcing that fact removes a whole class of wobble that no amount of
      temporal filtering removes, because the error is not zero-mean per joint.
 
-Order matters: gate, then constrain, then smooth. Gating first stops an outlier
-from poisoning the learned bone lengths; smoothing last means the constraint
-solver never sees the lag that smoothing introduces.
+Order matters, and the full order is:
+
+    gate -> drop implausible -> observe -> fill -> constrain -> smooth
+
+Judging before observing is what protects the learned bone lengths. Gating alone
+does not: the gate catches SPEED, and a landmark parked at double length has
+none, so observing first let ~1.5s of a hallucinated limb drag the median far
+enough that the joint stopped being recognised as implausible at all -- after
+which the constraint enforced the wrong length on the real joint. Filling sits
+between the drop and the constraint so a dropped joint is reconstructed from the
+body frame rather than left absent. Smoothing last means the constraint solver
+never sees the lag that smoothing introduces.
 """
 
 import collections
@@ -27,9 +36,17 @@ from transform import OneEuroFilter
 # Bones whose length is genuinely fixed on a real body. Ordered proximal ->
 # distal so corrections propagate outward from the torso, which is the part the
 # depth camera sees most reliably.
+#
+# ankle->toe is included and matters more than its length suggests. It is the
+# shortest vector on the body used as a DIRECTION -- transform.build_rotations
+# takes each foot's forward from it -- so it has the worst angular sensitivity
+# to depth noise of anything here: ~2cm of toe depth error is 7.6 deg of foot
+# yaw, and 4cm is 14.9 deg, both routine where the depth patch straddles the
+# floor. Constraining its length also lets implausible() reject a toe that has
+# landed on the floor behind the foot, which nothing previously could.
 BONE_CHAINS = [
-    [(S.L_HIP, S.L_KNEE), (S.L_KNEE, S.L_ANKLE)],
-    [(S.R_HIP, S.R_KNEE), (S.R_KNEE, S.R_ANKLE)],
+    [(S.L_HIP, S.L_KNEE), (S.L_KNEE, S.L_ANKLE), (S.L_ANKLE, S.L_FOOT)],
+    [(S.R_HIP, S.R_KNEE), (S.R_KNEE, S.R_ANKLE), (S.R_ANKLE, S.R_FOOT)],
     [(S.L_SHOULDER, S.L_ELBOW), (S.L_ELBOW, S.L_WRIST)],
     [(S.R_SHOULDER, S.R_ELBOW), (S.R_ELBOW, S.R_WRIST)],
 ]
@@ -177,9 +194,14 @@ class OutlierGate:
         self.max_hold = max_hold
         self._last = {}
         self._last_t = {}
+        # Joints whose reported value this frame is a HELD one, not a
+        # measurement. Surfaced so callers can mark them: a substituted joint
+        # that looks identical to a tracked one hides the failure entirely.
+        self.held = set()
 
     def __call__(self, joints, t):
         out = {}
+        self.held = set()
         for idx, point in joints.items():
             limit = self.fast_limit if idx in self.FAST_JOINTS else self.slow_limit
             previous = self._last.get(idx)
@@ -191,6 +213,7 @@ class OutlierGate:
                         # Implausible jump: hold the last good value, briefly.
                         if dt <= self.max_hold:
                             out[idx] = previous
+                            self.held.add(idx)
                         continue
             out[idx] = point
             self._last[idx] = point
@@ -257,10 +280,42 @@ class OcclusionFiller:
         self._last_seen = {}
         self._returned_at = {}
         self._was_missing = set()
+        # Where a returning joint is blending FROM, captured once at the moment
+        # it returns and held fixed for the ramp. Recomputing it per frame from
+        # the live pose is what made the ramp a no-op.
+        self._return_from = {}     # body-frame offset
+        self._return_world = {}    # world fallback when there is no torso
+
+    def _held_at(self, idx, frame, local):
+        """Where a held joint sits now, given a body-frame offset."""
+        if frame is not None and idx in local:
+            origin, basis = frame
+            return origin + basis @ local[idx]
+        return self._world.get(idx)  # no torso: world hold is all we have
 
     def __call__(self, joints, t):
         frame = torso_frame(joints)
         out = dict(joints)
+
+        # Snapshot where each RETURNING joint was being held, before the
+        # incoming measurements overwrite the stored pose below.
+        #
+        # Reading it afterwards made the whole ramp a no-op: `_local` had just
+        # been rewritten from the measurement, and basis.T then basis is the
+        # identity, so `held` came back exactly equal to `joints[idx]` and
+        # held*(1-w) + measured*w == measured for every w. The joint snapped in
+        # one frame -- precisely the glitch this class exists to remove.
+        for idx in self._was_missing & set(joints):
+            if idx not in self._return_from:
+                held = self._held_at(idx, frame, self._local)
+                if held is not None:
+                    # Stored in the BODY frame, so the blend target keeps
+                    # travelling with the person for the length of the ramp
+                    # instead of being left behind in world space.
+                    self._return_from[idx] = (
+                        frame[1].T @ (held - frame[0]) if frame is not None
+                        else None)
+                    self._return_world[idx] = held
 
         for idx in joints:
             self._last_seen[idx] = t
@@ -275,45 +330,57 @@ class OcclusionFiller:
         for idx, last_t in list(self._last_seen.items()):
             if idx in joints:
                 continue
-            age = t - last_t
-            if age > self.max_hold:
+            if t - last_t > self.max_hold:
+                # Genuinely gone rather than briefly occluded. Stop claiming it
+                # so `_was_missing` cannot grow without bound.
+                self._was_missing.discard(idx)
+                self._returned_at.pop(idx, None)
+                self._return_from.pop(idx, None)
+                self._return_world.pop(idx, None)
                 continue
-            if frame is not None and idx in self._local:
-                origin, basis = frame
-                out[idx] = origin + basis @ self._local[idx]
-            elif idx in self._world:
-                out[idx] = self._world[idx]  # no torso: world hold is all we have
+            held = self._held_at(idx, frame, self._local)
+            if held is not None:
+                out[idx] = held
             self._was_missing.add(idx)
 
         # Blend a returning joint back in over blend_time.
         for idx in list(self._was_missing):
             if idx not in joints:
+                # Occluded again mid-ramp. Drop the clock so the next return
+                # restarts the blend; leaving it stale meant `elapsed` was
+                # already past blend_time and the joint snapped anyway.
+                self._returned_at.pop(idx, None)
+                self._return_from.pop(idx, None)
+                self._return_world.pop(idx, None)
                 continue
             self._returned_at.setdefault(idx, t)
             elapsed = t - self._returned_at[idx]
             if elapsed >= self.blend_time:
                 self._was_missing.discard(idx)
                 self._returned_at.pop(idx, None)
+                self._return_from.pop(idx, None)
+                self._return_world.pop(idx, None)
                 continue
-            held = None
-            if frame is not None and idx in self._local:
+            local = self._return_from.get(idx)
+            if local is not None and frame is not None:
                 origin, basis = frame
-                held = origin + basis @ self._local[idx]
-            elif idx in self._world:
-                held = self._world[idx]
+                held = origin + basis @ local
+            else:
+                held = self._return_world.get(idx)
             if held is not None:
                 w = elapsed / self.blend_time
                 out[idx] = held * (1.0 - w) + joints[idx] * w
 
         return out
 
-    def reconstructed(self, joints):
-        """Which joints in the last output were invented rather than measured."""
-        return set(self._was_missing) - set(joints)
-
 
 class SkeletonStabilizer:
-    """gate -> bone constraints -> smooth. See module docstring for why that order."""
+    """gate -> drop -> observe -> fill -> constrain -> smooth.
+
+    See the module docstring for why that order, in particular why observing
+    the bone model AFTER the implausible-drop is what keeps a hallucinated limb
+    from becoming the learned limb.
+    """
 
     def __init__(self, min_cutoff=0.5, beta=0.35, enable_bones=True,
                  enable_gate=True, enable_fill=True):
@@ -332,23 +399,40 @@ class SkeletonStabilizer:
         measured = set(joints)
         joints = dict(joints)
 
+        # Joints in the output that are NOT what the model measured this frame,
+        # even though they were present in the input. Tracked explicitly because
+        # set-difference against the input cannot see them.
+        substituted = set()
+
         if self.gate is not None:
             joints = self.gate(joints, t)
+            substituted |= self.gate.held
 
         if self.bones is not None:
-            # Observe BEFORE correcting, or the model learns from its own output
-            # and slowly locks to whatever it first believed. Observing before
-            # the filler runs also keeps reconstructed joints out of the model,
-            # which would otherwise train on its own inventions.
-            self.bones.observe(joints)
-
             # Drop joints the skeleton says cannot be where the model put them,
             # so the filler treats them as occluded rather than trusting a
             # hallucinated position. Without this, a briefly-covered limb is
             # "present but wrong", which is worse than absent -- absent gets
             # reconstructed, wrong gets sent.
-            for idx in self.bones.implausible(joints):
+            dropped = self.bones.implausible(joints)
+            for idx in dropped:
                 joints.pop(idx, None)
+            substituted |= dropped
+
+            # Observe AFTER the drop, not before. Gating first does NOT protect
+            # the learned lengths as the module docstring claimed: the gate
+            # catches speed, and a limb MediaPipe places at double length and
+            # holds there has no speed error at all. Observed first, ~1.5s of
+            # such a hallucination drags the 90-sample median far enough that
+            # implausible() stops firing -- and then apply() enforces the wrong
+            # length on the real joint until 45 more good frames wash through.
+            #
+            # Gate-held joints are excluded for a related reason: a held
+            # endpoint paired with a fresh one measures a bone that never
+            # existed. Correcting before observing is still avoided, so the
+            # model never trains on its own output.
+            self.bones.observe({idx: point for idx, point in joints.items()
+                                if idx not in substituted})
 
         if self.filler is not None:
             joints = self.filler(joints, t)
@@ -365,5 +449,11 @@ class SkeletonStabilizer:
         # Which joints in this output were inferred rather than measured. The
         # preview colours these differently -- a held joint that looks identical
         # to a tracked one hides exactly the failure you are trying to watch for.
-        self.inferred = set(smoothed) - measured
+        #
+        # `set(smoothed) - measured` alone finds only joints MediaPipe never
+        # sent. It misses both the cases that matter most: a joint the gate
+        # held, and a joint dropped as implausible then reinvented by the
+        # filler -- the very case the drop above calls worse than absence. Both
+        # stay in `measured`, so both looked healthy in the preview.
+        self.inferred = (set(smoothed) - measured) | (substituted & set(smoothed))
         return smoothed
