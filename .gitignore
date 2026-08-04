@@ -1,0 +1,11 @@
+# Build artefacts and dependencies, not source
+.venv/
+vendor/
+__pycache__/
+*.pyc
+
+# Pose models: 44 MB of binaries, fetched by fetch-models.sh
+models/*.task
+
+# Recordings from `bodytracker.py measure --save`
+*.npz
