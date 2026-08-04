@@ -21,7 +21,7 @@ from the RealSense, then stabilises and latency-compensates the result.
 Read this before relying on it.
 
 Everything up to the network has been measured on real hardware: 100% tracking,
-4.7 mm joint jitter, 3.8 mm positional error at display time. What has **not**
+4.0 mm depth jitter, 4.4 mm jitter after stabilisation. What has **not**
 been confirmed is the last step — that VRChat's FBT calibration maps our trackers
 onto the right body parts and interprets our rotations as intended. Desktop
 VRChat hides all FBT settings without a headset, so that test needs a Quest and
@@ -100,18 +100,28 @@ package was installed non-editably. It prints the path either way; set
 
 ## How well does it work
 
-Measured on a real body, 542 frames:
+Measured on a real body. These come from **three different recordings**, not one
+run — the source is given per row, because presenting them as a single session
+implied a consistency the measurements do not have:
 
-| metric | value |
-|---|---|
-| tracking rate | 100% |
-| joint jitter | 4.7 mm |
-| positional error at display time | 3.8 mm |
-| limb-length spread | 26.8 mm |
-| framerate | 28–30 fps |
+| metric | value | recording | reproduce |
+|---|---|---|---|
+| tracking rate | 100% | 542 frames | `diagnose` |
+| depth jitter / lateral jitter | 4.0 mm / 3.0 mm | 542 frames | `diagnose` |
+| framerate | 28–30 fps | 542 frames | `diagnose` |
+| jitter, stabilised | 4.4 mm | 446 frames | `measure` |
+| limb-length spread, stabilised | 56.8 mm | 446 frames | `measure` |
+| jitter −57%, worst glitch −75% | vs unstabilised | 446 frames | `measure` |
+| positional error at display time | 3.8 mm | 446 frames | **not reproducible** |
 
-Stabilisation accounts for most of that: jitter −80%, worst glitch −75%, and
-ankle availability 71% → 100% through occlusion filling.
+Stabilisation accounts for most of it, and occlusion filling takes ankle
+availability from 71% to 100%.
+
+The last row is honest but historical: it comes from the lead-time sweep in
+commit `4a88d40`, whose script was never committed, so no command in this repo
+re-derives it. Treat it as a recorded observation rather than a current
+measurement. The same applies to the per-role table further down — `diagnose`
+reports per-*landmark* figures, not per-*role*.
 
 ## Known limitations
 
@@ -121,11 +131,17 @@ your far leg hides behind the near one; turn 180° and it is guessing. IMU track
 If you dance or turn constantly this will frustrate you. For sitting, standing and
 conversation it is fine.
 
-**Lighting.** Landmarks come from the RGB image, so this does **not** work in the
-dark despite being a depth camera. The failure is asymmetric and easy to
-misdiagnose: the depth stream still looks perfect while tracking has stopped. In
-`preview`, `NO POSE DETECTED` alongside a good depth image (press `d`) means *too
-dark*, not *broken*.
+**Lighting.** Landmarks come from the RGB image, so the default mode does **not**
+work in the dark despite this being a depth camera. The failure is asymmetric and
+easy to misdiagnose: the depth stream still looks perfect while tracking has
+stopped. In `preview`, `NO POSE DETECTED` alongside a good depth image (press `d`)
+means *too dark*, not *broken*.
+
+There is a way out: `--source ir` runs the pose model on the infrared imagers,
+which the projector illuminates, so it works with the lights off. Measured at
+100% detection and 4.8 mm lateral jitter with `--ir-emitter off` and a separate IR
+source; with the emitter on, the dot pattern is painted over the body and
+detection drops to ~48%. See SETUP.md for the full comparison.
 
 **Repeated open/close degrades the camera.** After several start/stop cycles in
 one session the stream can collapse to ~0.7 fps with no error at all. The app
@@ -204,8 +220,10 @@ VRChat applies tracker data per *rendered* frame, so a 30 Hz send on a 72 Hz
 headset is held for roughly 2.4 frames — staleness stacked on top of the
 pipeline latency `--lead-ms` already cancels. `--send-hz 90` runs the sender on
 its own thread, re-extrapolating the poses it already has to fill the gaps
-between camera frames. No new measurements are involved, so it costs nothing at
-the camera end.
+between camera frames. No new camera work is involved -- but the sender thread
+does contend for the GIL with inference and overlay drawing, so a requested rate
+is not necessarily an achieved one. The loop reports the rate it actually
+sends at; watch that rather than assuming.
 
 What is *not* known is whether the extra extrapolation between frames costs more
 jitter than the staleness it removes. Settling that needs a recording denser than
@@ -225,7 +243,7 @@ and why.
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 35 tests, no camera required
+pytest          # no camera required
 ruff check .
 ```
 

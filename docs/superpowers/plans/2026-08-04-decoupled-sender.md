@@ -1,5 +1,17 @@
 # Decoupled sender + rotation prediction — Implementation Plan
 
+> **Status: COMPLETE.** Tasks 1–4 landed in 91f9a6e, 1ceea69, 232ebf4 and ddc353a.
+> The unchecked boxes below are the plan as written, left as a record rather than
+> updated after the fact.
+>
+> Two claims in this plan were later found wrong by review and corrected in the
+> code: "the loop has no idle time to sub-step into" (SETUP.md measures 13.2 ms of
+> work against a 33 ms budget — the real argument is that a third of the period is
+> blocked inside `wait_for_frames`, so sub-stepping bunches sends rather than being
+> impossible), and "existing 35 tests" (the suite is larger). A follow-up review
+> also found the `RotationSmoother` accept path, the `PoseSender` thread's missing
+> exception guard, and several stabilisation defects; see ddd20fa.
+
 > **For agentic workers:** Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let output run at headset rate instead of camera rate, and give rotations the same latency compensation positions already get.

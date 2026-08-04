@@ -10,8 +10,8 @@ Coordinate contract (from VRChat's OSC tracker spec):
     point lands on the avatar's head bone (yaw is lerped over ~10s)
 
 Index -> role assignment is NOT confirmed by VRChat's docs; the spec only lists
-which roles exist (hip, chest, 2x feet, 2x knees, 2x elbows). See RESEARCH.md
-section 2 -- settle it empirically before relying on a particular numbering.
+which roles exist. RESEARCH.md section 2 resolves it against SlimeVR's
+convention, which is what transform.TRACKER_ROLES implements.
 
 Everything for one frame goes out as a single OSC BUNDLE rather than as loose
 messages. With 8 trackers plus the head that is 18 messages per frame, 540
@@ -99,10 +99,11 @@ class PoseSender:
     frames -- staleness stacked on top of the pipeline latency that --lead-ms
     already exists to cancel. The predictors can produce a pose for any moment,
     so a faster sender needs no new measurements: it re-extrapolates the ones it
-    has. Sub-stepping the capture loop instead would not work, because at ~30fps
-    with ~33ms of work per iteration that loop has no idle time to sub-step
-    into -- which is what makes a thread the only option rather than a
-    preference.
+    has. Sub-stepping the capture loop was the alternative, and it is worse rather
+    than impossible: the loop does have idle time -- 13.2ms of CPU work against a
+    33ms budget, per SETUP.md -- but roughly a third of the period is spent
+    blocked inside wait_for_frames where it cannot act, so sends would bunch into
+    the remaining window instead of being evenly spaced. A thread spaces them.
 
     Prediction is evaluated on the SENDING side, not at update time. A pose
     extrapolated when its frame arrived would be exactly as stale as the frame

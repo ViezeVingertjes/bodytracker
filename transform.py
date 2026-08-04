@@ -613,9 +613,11 @@ class TrackerPredictor:
     two noisy positions, so it carries roughly sqrt(2) times the position noise
     and multiplying that by a lead time would amplify it straight into the output.
 
-    Prediction also lets output run faster than the camera. VRChat applies tracker
-    data per rendered frame, so 30Hz updates on a 72-90Hz headset are held for two
-    or three frames at a time; predicting at each send smooths that.
+    Prediction also lets output run faster than the camera, which PoseSender
+    uses under `--send-hz` (NOT the default -- by default output is still one
+    send per camera frame). VRChat applies tracker data per rendered frame, so
+    30Hz updates on a 72-90Hz headset are held for two or three frames at a
+    time; predicting at each send smooths that.
     """
 
     def __init__(self, velocity_alpha=0.35, max_speed=4.0, max_horizon=0.12,

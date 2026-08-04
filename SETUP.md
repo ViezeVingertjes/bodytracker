@@ -209,7 +209,7 @@ Spreading markers too far instead pushes them off screen, which reads as absent.
 
 | File | What it does |
 |---|---|
-| `capture.py` | `DepthCamera` — aligned colour+depth, `deproject()` pixel→metres, `depth_at()` hole-tolerant depth sampling |
+| `capture.py` | `DepthCamera` — aligned colour+depth, `deproject()` pixel→metres, `depth_samples()` hole-tolerant depth sampling |
 | `osc_out.py` | `TrackerSender` — VRChat OSC tracker output |
 | `bodytracker.py fake` | Synthetic trackers at 30 Hz, no camera. `--indices 1,2,3,4` probes specific indices as a countable row. |
 | `bodytracker.py listen` | Listens on 9001 for VRChat's *outgoing* OSC — proves OSC is enabled |
@@ -297,7 +297,7 @@ knees                  87% / 95%
 ANKLES                 0.7% / 0.2%      <-- 3 and 1 frames out of 416
 ```
 
-**Feet are two of the three default trackers, and they are essentially never seen.**
+**Both feet are default trackers, and they are essentially never seen.**
 No amount of stabilisation helps a joint that is not in frame. Getting the whole body
 into frame — the §3 constraint — dominates every other quality lever here.
 
@@ -412,7 +412,7 @@ On a real body, 5 s per preset:
 | HIGH_ACCURACY | 65% | 11.4 | 20.3 mm | 116.2 mm | 21% |
 
 MEDIUM_DENSITY wins on every metric; ankle availability 58% → 96% matters most,
-since ankles are two of the three trackers we send.
+since both feet are default trackers.
 
 **This is the opposite of what a static scene says.** On a textured desk,
 HIGH_ACCURACY looks best (3.61 mm noise vs 6.53 mm) and was very nearly adopted on
@@ -490,7 +490,7 @@ Measured on a real body, 5 s per preset:
 | HIGH_ACCURACY | 65% | 11.4 | 20.3 mm | 116.2 mm | 21% |
 
 MEDIUM_DENSITY wins on every metric. Ankle availability 58% → 96% matters most,
-since ankles are two of the three trackers we send.
+since both feet are default trackers.
 
 **This is the opposite of what a static scene says.** On a textured desk,
 HIGH_ACCURACY looks clearly best (3.61 mm noise vs 6.53 mm) and was nearly adopted on

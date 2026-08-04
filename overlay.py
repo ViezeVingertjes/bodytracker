@@ -1,4 +1,4 @@
-"""Shared preview rendering, used by both `main.py --preview` and `tools/preview.py`.
+"""Shared preview rendering, used by the `preview` and `run --preview` subcommands.
 
 Kept separate so the live tracker and the diagnostic tool draw the SAME picture.
 If they had their own copies, the window you use while tuning would drift away

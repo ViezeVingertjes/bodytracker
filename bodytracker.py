@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bodytracker -- RealSense D415 full-body tracking for VRChat over OSC.
 
-One entry point, five subcommands:
+One entry point, these subcommands:
 
     bodytracker.py run [host]      track and send to VRChat  (add --preview)
     bodytracker.py preview         camera + overlay only, sends nothing

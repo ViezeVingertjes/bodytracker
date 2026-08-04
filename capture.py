@@ -340,7 +340,7 @@ class DepthCamera:
             HIGH_ACCURACY        65%          11.4  20.3mm      116.2mm     21%
 
         MEDIUM_DENSITY wins on every metric, most importantly ankle availability
-        (96% vs 58%) -- and ankles are two of the three trackers we send.
+        (96% vs 58%) -- and both feet are default trackers.
 
         Note this is the OPPOSITE of what a static scene suggests: on a textured
         desk, HIGH_ACCURACY looks best (3.61mm noise vs 6.53mm) and MEDIUM looks

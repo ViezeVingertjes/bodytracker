@@ -99,7 +99,8 @@ Two behaviours worth internalising:
   anchor reconciles them. It also means: **if your head estimate is noisy, your whole body
   jitters.** Prioritise a stable head joint.
 - **Fewer trackers beat more.** VRChat's own docs say so. Send **hip + 2 feet** (indices
-  1, 3, 4) and let VRChat's IK solve knees and elbows. A single-viewpoint depth camera's
+  1, 2, 3 under the mapping resolved in §2 -- an earlier draft said 1, 3, 4,
+  which predates it and is wrong) and let VRChat's IK solve knees and elbows. A single-viewpoint depth camera's
   knee/elbow estimates are the least reliable joints you have; feeding them in will look
   worse than omitting them.
 
@@ -328,7 +329,7 @@ direction (sitting, standing, casual conversation, streaming to a fixed camera),
 
 Secondary risks, in rough order of likelihood:
 
-- **Room depth** — 3 m of clear floor is a real requirement (§3). Check first.
+- **Room depth** — ~2.5 m of clear floor is a real requirement (§3). Check first.
 - **WiFi latency and jitter** — OSC is UDP over your LAN to a headset. Wired-backhaul AP
   and 5 GHz help; congested 2.4 GHz will show up as visible tracker lag.
 - **Rolling shutter** caps fast motion quality (§3).
