@@ -665,6 +665,62 @@ Closing it needs limb-axis reasoning (estimate the limb's direction and radius
 from the depth patch, project the landmark onto the axis), which is a real build
 and has not been attempted.
 
+## Using all four sensors: what is and is not possible
+
+The D415 has four: RGB, left IR, right IR, and the projector. The requirement was
+to use all of them for the most accurate tracking. Measured conclusion: **the
+current pipeline already does**, and the one remaining way to use them *differently*
+is blocked by hardware.
+
+### The pipeline already uses all four
+
+- **RGB** -> landmarks
+- **left + right IR** -> depth, via the ASIC's stereo matching
+- **projector** -> the texture that makes that matching work (96% coverage with it,
+  ~73% without)
+
+The IR imagers are not idle. They are used through the depth engine, and that engine
+is far better at it than we could be — see the geometry below.
+
+### Re-deriving depth from the raw pair is a downgrade, not an upgrade
+
+```
+baseline 54.86 mm, fx 608 px
+at 2.5 m: disparity is only 13.35 px
+1 px of disparity  = 174 mm of depth
+0.1 px (realistic block matching) = 18.6 mm
+the depth map we consume = 1 mm quantum, ~4 mm measured jitter
+```
+
+Matching the depth map needs 0.006 px disparity precision. The ASIC delivers it;
+hand-rolled block matching would be roughly **5x worse**.
+
+### RGB + IR pose fusion is blocked by the projector
+
+Two independent pose estimates fused would genuinely reduce the lateral error term.
+Measured on a real body:
+
+| config | detection | lateral jitter | depth jitter |
+|---|---|---|---|
+| colour | 100% | 3.0 mm | 4.0 mm |
+| IR, emitter **on** | 48% | 21.5 mm | 8.0 mm |
+| IR, emitter **off** | 100% | 4.8 mm | 9.0 mm |
+
+IR landmarks are good enough to fuse — **but only with the emitter off**, and the
+emitter is the same knob that depth depends on. Fusing under emitter-off would trade
+lateral 3.0 -> ~2.5 mm for depth 4.0 -> 9.0 mm. A net loss.
+
+Every escape route was tested and none works on this unit:
+
+- **`emitter_enabled = 2` (alternate)** is accepted, but measured as behaving like
+  OFF: laser metadata reads 0 on every frame, depth coverage 29.7%.
+- **Manual per-frame toggling** costs **130 ms per `set_option`** — four times the
+  entire 33 ms frame budget — and does not sync with frames (asking for 0 and 1 in
+  alternation produced "clean" both times).
+
+So on the D415, clean IR imagery and good depth cannot coexist. Colour remains the
+best configuration, and the sensors are already all contributing.
+
 ## Still to do
 
 - [x] ~~Confirm VRChat accepts our OSC trackers~~ — all 8 indices, local desktop VRChat

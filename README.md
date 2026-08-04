@@ -222,6 +222,17 @@ Measured rather than assumed — full tables in `SETUP.md`:
 `benchmark.py {presets,body,modes,filters,models}` re-runs any of it. `SETUP.md` also
 records the RealSense options audited and deliberately *not* used, with reasons.
 
+## Which sensors are used
+
+All four. RGB supplies the landmarks; the left and right IR imagers supply depth
+through the camera's stereo engine; the projector supplies the texture that engine
+needs (96% depth coverage with it, ~73% without).
+
+Using the IR imagers *separately* for pose — a second, independent set of landmarks
+to fuse with RGB — was measured and is blocked by hardware: IR is only readable with
+the projector off, and depth needs it on. `SETUP.md` has the numbers and the three
+escape routes that were tested and failed.
+
 ## Lighting: this needs a lit room
 
 **It does not work in the dark**, despite being a depth camera. Landmarks are
