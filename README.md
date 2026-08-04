@@ -185,7 +185,8 @@ bodytracker.py run [host] [--port 9000]
     --roles hip,chest,left_foot,right_foot
     --flip                          camera mounted upside down
     --lead-ms 50                    latency compensation (0 disables)
-    --send-hz 0                     0 = per camera frame; try 90 (see below)
+    --send-hz 90                    output rate (0 = one send per camera frame)
+    --flip / --no-flip              camera mounted upside down
     --model full                    lite | full | heavy
     --min-cutoff 0.5 --beta 0.35    smoothing
     --no-bones --no-gate --no-fill  disable a stabilisation stage
@@ -211,33 +212,38 @@ Each was chosen by measurement, and several contradict the obvious guess:
 - **50 ms prediction lead** — cuts display-time error 9.0 → 3.8 mm, and the
   optimum lands on the independently measured pipeline latency.
 
-## `--send-hz`: not yet measured
+## `--send-hz`: reasoned, not measured
 
-Every default above was settled by measurement. This one has not been, and is
-opt-in for exactly that reason.
+Every other default here was settled by measurement. This one was not, and it is
+called out rather than buried.
 
-VRChat applies tracker data per *rendered* frame, so a 30 Hz send on a 72 Hz
-headset is held for roughly 2.4 frames — staleness stacked on top of the
-pipeline latency `--lead-ms` already cancels. `--send-hz 90` runs the sender on
-its own thread, re-extrapolating the poses it already has to fill the gaps
-between camera frames. No new camera work is involved -- but the sender thread
-does contend for the GIL with inference and overlay drawing, so a requested rate
-is not necessarily an achieved one. The loop reports the rate it actually
-sends at; watch that rather than assuming.
+VRChat applies tracker data per *rendered* frame, so a 30 Hz send to a 72 Hz
+headset is held for roughly 2.4 frames — up to 33 ms of staleness, 16 ms on
+average, stacked on top of the ~50 ms pipeline latency `--lead-ms` already
+cancels. At 90 Hz that ceiling drops to about 11 ms. The poses in between are
+re-extrapolations of measurements already held, so the camera and the pose model
+do no extra work; it behaves as a predictor rather than a hold, because the
+extrapolation horizon grows smoothly between camera frames and resets by only the
+prediction error when the next one lands.
 
 What is *not* known is whether the extra extrapolation between frames costs more
 jitter than the staleness it removes. Settling that needs a recording denser than
-the pipeline's own 30 fps — otherwise the ground truth has to be interpolated,
-and linear interpolation is the same model linear extrapolation assumes, so the
-yardstick would favour the thing being tested. Until that is done, treat
-`--send-hz` as something to try, not as a measured improvement.
+the pipeline's own 30 fps — otherwise the ground truth has to be interpolated, and
+linear interpolation is the same model linear extrapolation assumes, so the
+yardstick would favour the thing being tested.
 
-Rotation prediction has no such caveat: rotations were being held at their last
-measured value while positions were extrapolated 50 ms ahead, so every frame
-shipped a pose that disagreed with itself. They now share `--lead-ms`.
+Two things make the risk manageable. The sender thread contends for the GIL with
+inference, so the achieved rate can fall short of the request — the loop prints
+the rate it **actually** sends at every 150 frames, and that is the number to
+watch. And `--send-hz 0` restores the previous behaviour exactly: one send per
+camera frame, byte-identical output apart from rotation prediction.
 
-`SETUP.md` has the full tables, plus the RealSense options deliberately *not* used
-and why.
+## Camera orientation
+
+`--flip` if your camera is mounted upside down. On a permanently inverted rig, set
+`BODYTRACKER_FLIP=1` once instead of remembering the flag — forgetting it fails in
+the confusing direction, because an upside-down image still tracks and still sends,
+it just puts your feet where your head is. `--no-flip` overrides the variable.
 
 ## Development
 

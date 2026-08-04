@@ -12,6 +12,7 @@ send path, not about tracking quality.
 """
 
 import contextlib
+import importlib
 import socket
 import threading
 import time
@@ -139,6 +140,62 @@ class TestFakeMatchesRun:
         indices = [index for index, *_ in bodytracker.ANATOMICAL]
         assert sorted(indices) == sorted(TRACKER_ROLES.values())
         assert len(set(indices)) == len(indices), "duplicate index in fake"
+
+
+class TestDefaults:
+    """The shipped defaults, pinned.
+
+    Every one of these is a decision with a written justification behind it.
+    A silent change is exactly the kind that is noticed months later as "it
+    used to feel better".
+    """
+
+    @staticmethod
+    def _args(argv):
+        import bodytracker
+        return bodytracker.build_parser().parse_args(argv)
+
+    def test_run_defaults(self):
+        a = self._args(["run", "1.2.3.4"])
+        assert a.send_hz == 90.0          # reasoned, not measured -- see the constant
+        assert a.lead_ms == 50.0          # measured optimum, commit 4a88d40
+        assert a.model == "full"          # heavy is 3x slower on a body
+        assert a.roles == "hip,chest,left_foot,right_foot"
+        assert (a.no_bones, a.no_gate, a.no_fill) == (False, False, False)
+        assert (a.no_head, a.no_rotations) == (False, False)
+        assert a.rotate_180 is False, "upright must stay the shipped default"
+
+    def test_flip_env_var_sets_the_default(self, monkeypatch):
+        monkeypatch.setenv("BODYTRACKER_FLIP", "1")
+        import bodytracker
+        importlib.reload(bodytracker)
+        try:
+            assert bodytracker.build_parser().parse_args(["run", "h"]).rotate_180 is True
+            # ...and the command line still wins over the environment.
+            assert bodytracker.build_parser().parse_args(
+                ["run", "h", "--no-flip"]).rotate_180 is False
+        finally:
+            monkeypatch.delenv("BODYTRACKER_FLIP")
+            importlib.reload(bodytracker)
+
+    @pytest.mark.parametrize("value", ["", "0", "no", "false", "off", "banana"])
+    def test_flip_env_var_is_not_truthy_by_accident(self, monkeypatch, value):
+        # An unset-ish or explicitly-negative value must not silently invert
+        # the whole coordinate system.
+        monkeypatch.setenv("BODYTRACKER_FLIP", value)
+        import bodytracker
+        importlib.reload(bodytracker)
+        try:
+            assert bodytracker.build_parser().parse_args(["run", "h"]).rotate_180 is False
+        finally:
+            monkeypatch.delenv("BODYTRACKER_FLIP")
+            importlib.reload(bodytracker)
+
+    def test_preview_never_starts_a_sender(self):
+        # preview passes sending=False; a default send rate must not leak into
+        # a mode whose entire contract is that it transmits nothing.
+        a = self._args(["preview"])
+        assert not hasattr(a, "send_hz"), "preview must not accept --send-hz"
 
 
 class TestRunLoopSendRate:

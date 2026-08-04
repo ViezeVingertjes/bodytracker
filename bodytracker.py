@@ -25,6 +25,7 @@ will not move. That is expected, not a fault.
 import argparse
 import collections
 import math
+import os
 import pathlib
 import shutil
 import sys
@@ -47,6 +48,27 @@ from transform import (
 )
 
 SEND_HZ = 30
+
+# Default output rate, decoupled from the camera by the sender thread.
+#
+# UNLIKE every other default here, this one is REASONED, not measured -- said
+# plainly because the rest of this project earns its defaults with numbers.
+#
+# The reasoning: VRChat applies tracker data per RENDERED frame, so a 30Hz send
+# to a 72Hz headset is held for ~2.4 frames, adding up to 33ms of staleness (16ms
+# on average) on top of the ~50ms pipeline latency --lead-ms already cancels. At
+# 90Hz that ceiling drops to ~11ms. The poses in between are re-extrapolations of
+# measurements we already hold, so the camera and the solver do no extra work,
+# and it is a proper predictor rather than a hold: the extrapolation horizon
+# grows smoothly between camera frames and resets by exactly the prediction
+# error when the next one lands.
+#
+# The cost is real but small and visible: ~90 datagrams/s of ~500 bytes is 45KB/s,
+# and the sender thread contends for the GIL with inference. The loop prints the
+# ACHIEVED rate every 150 frames precisely so that contention cannot hide.
+#
+# Set --send-hz 0 for the previous behaviour, one send per camera frame.
+DEFAULT_SEND_HZ = 90.0
 # Seconds of continuous loss before reporting it. Short dropouts are normal even
 # at high tracking rates, and announcing each one buries the real problems.
 LOSS_REPORT_S = 0.75
@@ -56,12 +78,22 @@ LOSS_REPORT_S = 0.75
 # shared plumbing
 # --------------------------------------------------------------------------
 
+def env_flag(name):
+    """Truthy environment variable, tolerant of how people actually write them."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def add_camera_args(parser):
     parser.add_argument("--width", type=int, default=848)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--flip", dest="rotate_180", action="store_true",
                         help="camera is mounted upside down (rotates frames AND "
-                             "intrinsics together)")
+                             "intrinsics together). Set BODYTRACKER_FLIP=1 to "
+                             "make this the default on a permanently inverted "
+                             "mount")
+    parser.add_argument("--no-flip", dest="rotate_180", action="store_false",
+                        help="camera is the right way up (overrides "
+                             "BODYTRACKER_FLIP)")
     parser.add_argument("--no-filter", dest="filtering", action="store_false",
                         help="disable RealSense depth post-processing")
     parser.add_argument("--ir-gain", type=int, default=None,
@@ -81,7 +113,13 @@ def add_camera_args(parser):
     parser.add_argument("--source", choices=("color", "ir"), default="color",
                         help="image the pose model sees. 'ir' works in the dark "
                              "and needs no depth alignment")
-    parser.set_defaults(rotate_180=False, filtering=True)
+    # Orientation is a property of YOUR mount, not of the software, so it
+    # belongs in the environment rather than in the shipped default. Upright
+    # stays the default for everyone else; a permanently inverted rig sets the
+    # variable once instead of remembering --flip on every invocation, which
+    # fails in the confusing direction when forgotten -- an upside-down image
+    # still tracks and still sends, it just puts your feet where your head is.
+    parser.set_defaults(rotate_180=env_flag("BODYTRACKER_FLIP"), filtering=True)
 
 
 def add_model_args(parser):
@@ -840,11 +878,10 @@ def build_parser():
     run.add_argument("--lead-ms", type=float, default=50.0,
                      help="extrapolate this far ahead to cancel pipeline latency "
                           "(measured ~50ms; 0 disables)")
-    run.add_argument("--send-hz", type=float, default=0.0,
-                     help="send rate. 0 (default) sends once per camera frame; "
-                          "a positive value runs a sender thread at that rate, "
-                          "filling the gaps between camera frames that a "
-                          "72-90Hz headset would otherwise hold. Try 90")
+    run.add_argument("--send-hz", type=float, default=DEFAULT_SEND_HZ,
+                     help=f"send rate (default {DEFAULT_SEND_HZ:g}). 0 sends "
+                          "once per camera frame instead, which is what every "
+                          "release before this did")
     add_camera_args(run)
     add_model_args(run)
     add_stabilise_args(run)
