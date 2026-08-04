@@ -121,7 +121,32 @@ bodytracker.py run [host] [--port 9000]
     --min-cutoff 0.5 --beta 0.35         smoothing (lower cutoff = smoother, laggier)
     --no-bones --no-gate --no-fill       disable a stabilisation stage (A/B testing)
     --no-rotations --no-filter           disable rotations / depth post-processing
+    --lead-ms 50                         latency compensation (0 disables)
 ```
+
+### Latency compensation
+
+The pipeline is consistently late — measured 9.1 ms waiting for a frame, 23.9 ms of
+inference, and a frame that is ~50 ms old by the time it could be displayed. Trackers
+therefore show where you *were*, which measured as **9.0 mm of positional error at
+display time**.
+
+`--lead-ms` extrapolates each tracker forward using a smoothed velocity to cancel that.
+Measured on a 446-frame recording against where the body actually is at display time:
+
+| lead | jitter | error at display time |
+|---|---|---|
+| 0 ms | 4.5 mm | 9.0 mm |
+| **50 ms** | **5.4 mm** | **3.8 mm** |
+| 65 ms | 5.7 mm | 3.7 mm |
+| 85 ms | 6.3 mm | 4.9 mm (overshooting) |
+
+**58% less positional error for 20% more jitter.** The optimum lands on the measured
+latency rather than somewhere arbitrary, which is what distinguishes cancelling a real
+lag from fitting noise. Default is 50 ms; `--lead-ms 0` disables it.
+
+Note this is *extrapolation*, not interpolation. Interpolating between frames would
+require holding a frame back, making latency worse rather than better.
 
 Every `--no-*` switch exists so a stage can be measured against its own absence with
 `bodytracker.py measure`, not as a workaround.

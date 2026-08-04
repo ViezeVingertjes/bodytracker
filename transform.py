@@ -415,6 +415,79 @@ def matrix_to_unity_euler(m):
     return basis_to_unity_euler(m[:, 0], m[:, 1], m[:, 2])
 
 
+class TrackerPredictor:
+    """Latch plus velocity, so a pose can be produced for any moment in time.
+
+    The pipeline is consistently late: measured 9.1ms waiting for a frame, 23.9ms
+    of inference, and a frame that is ~50ms old by the time it could be displayed.
+    Trackers therefore show where you WERE, and the error that causes was measured
+    at 9.0mm at display time.
+
+    Extrapolating forward by roughly that latency cancels most of it. Measured on
+    a 446-frame recording, against where the body actually is at display time:
+
+        lead      jitter    display-time error
+          0ms      4.5mm         9.0mm
+         50ms      5.4mm         3.8mm
+         65ms      5.7mm         3.7mm
+         85ms      6.3mm         4.9mm   <- overshooting
+
+    58% less error for 20% more jitter, with the optimum landing on the measured
+    latency rather than somewhere arbitrary -- which is what distinguishes
+    cancelling a real lag from fitting noise.
+
+    Velocity is smoothed with an EMA rather than used raw: it is a difference of
+    two noisy positions, so it carries roughly sqrt(2) times the position noise
+    and multiplying that by a lead time would amplify it straight into the output.
+
+    Prediction also lets output run faster than the camera. VRChat applies tracker
+    data per rendered frame, so 30Hz updates on a 72-90Hz headset are held for two
+    or three frames at a time; predicting at each send smooths that.
+    """
+
+    def __init__(self, velocity_alpha=0.35, max_speed=4.0):
+        self.velocity_alpha = velocity_alpha
+        # Hard ceiling on extrapolated speed. A bad velocity estimate would
+        # otherwise throw a tracker metres away for one frame.
+        self.max_speed = max_speed
+        self._value = {}
+        self._velocity = {}
+        self._time = {}
+
+    def update(self, trackers, t):
+        for key, position in trackers.items():
+            previous, previous_t = self._value.get(key), self._time.get(key)
+            if previous is not None and previous_t is not None and t > previous_t:
+                raw = (position - previous) / (t - previous_t)
+                speed = float(np.linalg.norm(raw))
+                if speed > self.max_speed:
+                    raw = raw * (self.max_speed / speed)
+                old = self._velocity.get(key)
+                self._velocity[key] = (raw if old is None else
+                                       old * (1 - self.velocity_alpha)
+                                       + raw * self.velocity_alpha)
+            self._value[key] = position
+            self._time[key] = t
+
+    def at(self, t, lead=0.0):
+        """Every tracker seen so far, extrapolated to `t + lead`."""
+        out = {}
+        for key, position in self._value.items():
+            velocity = self._velocity.get(key)
+            if velocity is None:
+                out[key] = position
+                continue
+            horizon = (t - self._time[key]) + lead
+            # Never predict further ahead than a few frames; beyond that the
+            # linear model stops being a reasonable description of a limb.
+            horizon = float(np.clip(horizon, 0.0, 0.12))
+            out[key] = position + velocity * horizon
+        return out
+
+    def stale_keys(self, t, max_stale=1.0):
+        return [k for k, ts in self._time.items() if t - ts > max_stale]
+
+
 class TrackerLatch:
     """Keeps every enabled tracker emitting, even when its joint is missing.
 

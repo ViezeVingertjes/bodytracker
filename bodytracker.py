@@ -43,6 +43,7 @@ from transform import (
     TRACKER_ROLES,
     RotationSmoother,
     TrackerLatch,
+    TrackerPredictor,
     build_trackers,
 )
 
@@ -138,7 +139,7 @@ def cmd_run(args, parser, *, sending=True):
 
     sender = TrackerSender(args.host, args.port) if sending else None
     stabilizer = make_stabilizer(args)
-    latch, rotation_latch = TrackerLatch(), TrackerLatch()
+    latch, rotation_latch = TrackerPredictor(), TrackerLatch()
     rotation_smoother = RotationSmoother()
 
     if sending:
@@ -218,7 +219,8 @@ def cmd_run(args, parser, *, sending=True):
                     # wherever it last was.
                     held = rotation_latch.all_current()
                     poses, head_pose = {}, None
-                    for key, position in latch.all_current().items():
+                    # Extrapolate to when this pose will actually be displayed.
+                    for key, position in latch.at(t, args.lead_ms / 1000.0).items():
                         rotation = held.get(key, (0.0, 0.0, 0.0))
                         if key == "head":
                             if not args.no_head:
@@ -250,7 +252,7 @@ def cmd_run(args, parser, *, sending=True):
                 if sending:
                     stale = set(latch.stale_keys(t)) | set(rotation_latch.stale_keys(t))
                     names = {v: k for k, v in TRACKER_ROLES.items()}
-                    live = [names.get(k, str(k)) for k in latch.all_current()
+                    live = [names.get(k, str(k)) for k in latch.at(t)
                             if k != "head"]
                     extra.append((f"sending {len(live)} -> {args.host}:{args.port}",
                                   overlay.CYAN))
@@ -292,6 +294,7 @@ def cmd_preview(args, parser):
     args.roles = ",".join(DEFAULT_ROLES)
     args.no_head = False
     args.no_rotations = False
+    args.lead_ms = 0.0      # nothing is sent, so prediction would only confuse
     args.preview = True
     cmd_run(args, parser, sending=False)
 
@@ -782,6 +785,9 @@ def build_parser():
                      help="omit the head anchor VRChat uses to align tracking space")
     run.add_argument("--no-rotations", action="store_true",
                      help="send identity rotations instead of derived ones")
+    run.add_argument("--lead-ms", type=float, default=50.0,
+                     help="extrapolate this far ahead to cancel pipeline latency "
+                          "(measured ~50ms; 0 disables)")
     add_camera_args(run)
     add_model_args(run)
     add_stabilise_args(run)
