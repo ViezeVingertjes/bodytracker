@@ -63,6 +63,13 @@ def add_camera_args(parser):
                         help="camera mounted the right way up (default: upside down)")
     parser.add_argument("--no-filter", dest="filtering", action="store_false",
                         help="disable RealSense depth post-processing")
+    parser.add_argument("--ir-gain", type=int, default=None,
+                        help="sensor gain in IR mode (16-248; default 128). "
+                             "Higher = brighter IR, slightly noisier depth")
+    parser.add_argument("--ir-mode", choices=("global", "masked", "clahe",
+                                              "masked_clahe"),
+                        default="masked_clahe",
+                        help="IR contrast handling (default: masked_clahe)")
     parser.add_argument("--source", choices=("color", "ir"), default="color",
                         help="image the pose model sees. 'ir' works in the dark "
                              "and needs no depth alignment")
@@ -99,7 +106,9 @@ def make_stabilizer(args):
 def open_camera(args):
     return DepthCamera(args.width, args.height,
                        rotate_180=args.rotate_180, filtering=args.filtering,
-                       source=getattr(args, "source", "color"))
+                       source=getattr(args, "source", "color"),
+                       ir_mode=getattr(args, "ir_mode", "masked_clahe"),
+                       ir_gain=getattr(args, "ir_gain", None) or 128)
 
 
 def parse_roles(parser, spec):

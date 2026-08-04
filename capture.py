@@ -21,24 +21,76 @@ DEFAULT_HEIGHT = 480
 DEFAULT_FPS = 30
 
 
-def normalise_ir(ir):
+# Sensor gain used in IR mode. The stereo module's auto-exposure optimises for
+# DEPTH -- it targets the contrast of the projector's dots, not a viewable image
+# -- so it pins gain at the minimum (16 of 16..248) and leaves IR starved. That
+# is why the dim lower body tracked so badly: the signal was freely available and
+# simply not being taken.
+#
+# Measured, exposure held at its 30fps maximum of 33000us:
+#
+#     gain   IR mean   depth coverage   depth noise
+#       16       8.2           85.9%        10.58mm
+#      128      41.0           85.8%        11.28mm
+#      200      62.1           86.2%        11.44mm
+#
+# 128 is a deliberate midpoint: 5x the IR brightness for ~7% more depth noise and
+# no coverage loss, keeping headroom before highlights clip. Depth quality still
+# matters -- this is a depth tracker.
+DEFAULT_IR_GAIN = 128
+
+IR_MODES = ("global", "masked", "clahe", "masked_clahe")
+DEFAULT_IR_MODE = "masked_clahe"
+
+
+def normalise_ir(ir, depth=None, mode=DEFAULT_IR_MODE, depth_scale=0.001,
+                 min_distance=0.3, max_distance=4.0):
     """Single-channel IR -> a 3-channel image the pose model can use.
 
-    The stereo imagers are exposed for depth, not for a photograph, so the raw
-    IR frame is very dark (measured mean 21/255, 95th percentile 38). MediaPipe
-    needs recognisable contrast, so the usable range is stretched to full scale.
+    The stereo imagers are exposed for DEPTH, not for a photograph, so the raw
+    frame is very dark (measured mean 21/255, p95 38) and MediaPipe needs
+    recognisable contrast. Raising the sensor's own exposure would brighten IR at
+    the cost of the depth quality that shares those imagers, so this is done in
+    software.
 
-    Percentiles rather than min/max: a single hot pixel or a specular highlight
-    would otherwise set the scale and flatten everything else.
+    The projector is the illumination, and its light falls off as 1/distance^2.
+    That produces a strong gradient: on a real subject, head and shoulders track
+    at ~98% while ankles manage ~30% and toes 6%, with "low visibility" the
+    dominant rejection. The lower body is simply too dim.
 
-    Done in software on purpose -- raising the sensor's exposure or gain would
-    brighten IR at the cost of the depth quality that shares those imagers.
+    Modes, in increasing order of how hard they fight that:
+
+    global       percentile stretch over the whole frame. Simple, and the
+                 original -- but a bright nearby object sets the scale and
+                 leaves the actual subject dark.
+    masked       percentiles computed only over pixels inside the working
+                 volume, so the SUBJECT sets the exposure rather than the
+                 furniture. This is what depth is for.
+    clahe        local histogram equalisation, which fixes a gradient a global
+                 stretch cannot: it brightens the dim lower body without
+                 blowing out the bright upper body.
+    masked_clahe both -- restrict the range to the subject, then equalise
+                 locally.
     """
-    lo, hi = np.percentile(ir, (2, 98))
+    ir = np.asarray(ir)
+    if mode in ("masked", "masked_clahe") and depth is not None:
+        in_volume = (depth * depth_scale > min_distance) & \
+                    (depth * depth_scale < max_distance)
+        sample = ir[in_volume] if in_volume.sum() > 500 else ir
+    else:
+        sample = ir
+
+    lo, hi = np.percentile(sample, (2, 98))
     if hi - lo < 1:
         lo, hi = float(ir.min()), max(float(ir.max()), lo + 1)
     stretched = np.clip((ir.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255)
-    return np.repeat(stretched.astype(np.uint8)[:, :, None], 3, axis=2)
+    out = stretched.astype(np.uint8)
+
+    if mode in ("clahe", "masked_clahe"):
+        import cv2
+        out = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8)).apply(out)
+
+    return np.repeat(out[:, :, None], 3, axis=2)
 
 
 class DepthCamera:
@@ -52,6 +104,8 @@ class DepthCamera:
         min_distance=0.3,
         max_distance=4.0,
         source="color",
+        ir_mode=DEFAULT_IR_MODE,
+        ir_gain=DEFAULT_IR_GAIN,
     ):
         self.width = width
         self.height = height
@@ -75,6 +129,8 @@ class DepthCamera:
         # photographs; a false-colour depth image is far outside that
         # distribution. IR is still a real photograph, just at 850nm.
         self.source = source
+        self.ir_mode = ir_mode
+        self.ir_gain = ir_gain
         # Post-processing can be switched off to measure what it is buying.
         self.filtering = filtering
         # Working volume. 4 m comfortably covers standing at 2.3-3 m plus arm
@@ -203,6 +259,12 @@ class DepthCamera:
         self._preset_attempts = 0
         self._try_visual_preset()
 
+        if self.source == "ir" and self.ir_gain:
+            # Auto-exposure must go, or it immediately winds gain back down.
+            try_set(rs.option.enable_auto_exposure, 0.0, "ir_auto_exposure")
+            try_set(rs.option.exposure, 33000.0, "ir_exposure")
+            try_set(rs.option.gain, float(self.ir_gain), "ir_gain")
+
         # The IR projector is what gives stereo something to match on blank
         # surfaces. Full power is the single biggest coverage win indoors.
         try_set(rs.option.emitter_enabled, 1.0, "emitter_enabled")
@@ -302,7 +364,9 @@ class DepthCamera:
 
         color = np.asanyarray(image_frame.get_data())
         if self.source == "ir":
-            color = normalise_ir(color)
+            color = normalise_ir(
+                color, np.asanyarray(depth_frame.get_data()), self.ir_mode,
+                self._depth_scale or 0.001, self.min_distance, self.max_distance)
         depth = np.asanyarray(depth_frame.get_data())
         if self.rotate_180:
             # Reversing both axes is a 180 deg rotation. Copy, because MediaPipe
