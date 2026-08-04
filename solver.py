@@ -153,9 +153,46 @@ class Skeleton:
         return self.joints.get(index)
 
 
+# How a patch of valid depths becomes one number.
+#
+# `median` was the original choice, for outlier resistance. It has a hidden cost:
+# the raw values are integer multiples of the 1 mm depth unit, and a median
+# RETURNS one of them -- so it preserves the quantisation exactly. A mean does
+# not, and resolves sub-millimetre. Measured on a static surface, temporal
+# jitter: median 1.00 mm, mean 0.82 mm, trimmed mean 0.88 mm.
+#
+# Outlier resistance is no longer the median's job anyway: by this point the
+# samples have already been gated against the body depth, so gross background
+# values are gone before the reducer sees them.
+#
+# `near` is the interesting one for limbs. Depth jitter on a BODY is ~4 mm versus
+# ~1 mm on a static surface, which is not quantisation -- it is the landmark
+# sliding across a curved limb and sampling a different part of it each frame.
+# The nearest surface point of a convex limb is its axis, and unlike the median
+# that is invariant to where on the limb the landmark happens to land.
+DEPTH_ESTIMATORS = ("median", "mean", "trimmed", "near")
+DEFAULT_DEPTH_ESTIMATOR = "trimmed"
+
+
+def reduce_depth(samples, estimator=DEFAULT_DEPTH_ESTIMATOR):
+    if estimator == "median":
+        return float(np.median(samples))
+    if estimator == "mean":
+        return float(np.mean(samples))
+    if estimator == "near":
+        # 20th percentile rather than the minimum: the true minimum of a noisy
+        # patch is an outlier by construction.
+        return float(np.percentile(samples, 20))
+    lo, hi = np.percentile(samples, [20, 80])
+    kept = samples[(samples >= lo) & (samples <= hi)]
+    return float(np.mean(kept)) if kept.size else float(np.median(samples))
+
+
 class PoseSolver:
-    def __init__(self, model_path=MODEL_PATH, min_visibility=0.5, depth_tolerance=0.45):
+    def __init__(self, model_path=MODEL_PATH, min_visibility=0.5, depth_tolerance=0.45,
+                 depth_estimator=DEFAULT_DEPTH_ESTIMATOR):
         self.min_visibility = min_visibility
+        self.depth_estimator = depth_estimator
         # How far a landmark's depth may sit from the torso depth before it is
         # treated as background. 0.45 m comfortably covers a limb extended toward
         # or away from the camera while still rejecting a wall behind the subject.
@@ -297,7 +334,7 @@ class PoseSolver:
             if near.size == 0:
                 rejected[idx] = "background"
                 continue
-            depth_m = float(np.median(near))
+            depth_m = reduce_depth(near, self.depth_estimator)
             joints[idx] = np.array(camera.deproject(px, py, depth_m), dtype=float)
             visibility[idx] = vis
 

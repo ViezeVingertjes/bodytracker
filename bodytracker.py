@@ -10,6 +10,7 @@ One entry point, five subcommands:
     bodytracker.py listen          watch VRChat's outgoing OSC, proves OSC is enabled
     bodytracker.py fetch           download the pose models (run this first)
     bodytracker.py diagnose        why joints get dropped -- drives what to fix
+    bodytracker.py depth-estimators  which depth patch reducer is best
 
 Before anything appears in VRChat you must, in VRChat:
   1. enable OSC          (desktop: hold R -> Options -> OSC -> Enabled)
@@ -332,6 +333,94 @@ def cmd_fake(args, parser):
                  for index, _label, x, y, freq, amp, phase in layout}
         sender.send_frame(poses, None if args.no_head else (0.0, 1.70, 0.0))
         time.sleep(period)
+
+
+# --------------------------------------------------------------------------
+# depth-estimators -- which patch reducer is best ON A BODY?
+# --------------------------------------------------------------------------
+
+def cmd_depth_estimators(args, _parser):
+    """Compare depth patch reducers on a real body, in ONE recording.
+
+    A static surface says the mean beats the median (1.00 -> 0.82 mm jitter,
+    because a median returns one of the raw 1 mm-quantised values and so cannot
+    resolve below the quantum). But a body is not a static surface: depth jitter
+    on a body is ~4 mm, dominated by the landmark sliding across a curved limb
+    rather than by quantisation. So the estimators are re-run here against the
+    same frames, with a person in them, because that is the case we care about.
+
+    All estimators see IDENTICAL frames -- re-recording per estimator would
+    compare different movements, which is the mistake that made depth filtering
+    look 4x worse than it is earlier in this project.
+    """
+    from solver import DEPTH_ESTIMATORS, reduce_depth
+
+    cv2 = overlay.require_cv2() if args.preview else None
+    print(f"Recording {args.seconds:.0f}s -- stand in frame, whole body "
+          "visible, move naturally.", flush=True)
+
+    # (joint -> list of per-frame sample arrays), captured once, replayed for all
+    captured = collections.defaultdict(list)
+    with open_camera(args) as cam, PoseSolver(model_path(args.model)) as solver:
+        for _ in range(10):
+            cam.read()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < args.seconds:
+            frame = cam.read()
+            if frame is None:
+                continue
+            color, depth_raw, _ = frame
+            sk = solver.solve(cam, color, depth_raw, (time.monotonic() - t0) * 1000)
+            if cv2 is not None:
+                canvas = color.copy()
+                overlay.draw_skeleton(canvas, sk, camera=cam)
+                overlay.draw_lines(canvas, [
+                    ("DEPTH ESTIMATOR COMPARISON", overlay.CYAN),
+                    (f"{args.seconds - (time.monotonic() - t0):4.1f}s left",
+                     overlay.WHITE),
+                    *overlay.status_lines(sk, 0.0,
+                                          frame_height=canvas.shape[0])[1:],
+                ])
+                cv2.imshow("bodytracker depth estimators", canvas)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+            if sk is None:
+                continue
+            for idx, (px, py) in sk.pixels.items():
+                if idx not in sk.joints:
+                    continue
+                samples = cam.depth_samples(depth_raw, px, py)
+                if samples.size >= 8:
+                    captured[idx].append(samples)
+
+    if cv2 is not None:
+        cv2.destroyAllWindows()
+
+    usable = {k: v for k, v in captured.items() if len(v) >= 40}
+    if not usable:
+        print("Not enough data -- were you in frame?")
+        return 1
+    print(f"\n{sum(len(v) for v in usable.values())} joint-samples over "
+          f"{len(usable)} joints\n")
+    print(f"{'estimator':<12}{'depth jitter (median over joints)':>36}")
+    print("-" * 50)
+    results = {}
+    for estimator in DEPTH_ESTIMATORS:
+        per_joint = []
+        for series in usable.values():
+            values = np.array([reduce_depth(s, estimator) for s in series])
+            per_joint.append(np.median(np.abs(np.diff(values))) * 1000)
+        results[estimator] = float(np.median(per_joint))
+        print(f"{estimator:<12}{results[estimator]:>32.2f}mm")
+    best = min(results, key=results.get)
+    current = "trimmed"
+    print(f"\nbest: {best} ({results[best]:.2f}mm)   current default: {current} "
+          f"({results[current]:.2f}mm)")
+    if best != current:
+        print(f"-> change DEFAULT_DEPTH_ESTIMATOR in solver.py to {best!r}")
+    else:
+        print("-> current default is already the best of these")
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -690,6 +779,14 @@ def build_parser():
     add_camera_args(diag)
     add_model_args(diag)
     diag.set_defaults(func=cmd_diagnose, preview=True)
+
+    est = sub.add_parser("depth-estimators",
+                         help="compare depth patch reducers on a real body")
+    est.add_argument("--seconds", type=float, default=20)
+    est.add_argument("--no-preview", dest="preview", action="store_false")
+    add_camera_args(est)
+    add_model_args(est)
+    est.set_defaults(func=cmd_depth_estimators, preview=True)
 
     fetch = sub.add_parser("fetch", help="download the pose models")
     fetch.add_argument("--model", choices=MODELS, default=DEFAULT_MODEL)
